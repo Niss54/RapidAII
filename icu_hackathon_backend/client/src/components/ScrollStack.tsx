@@ -211,27 +211,8 @@ const ScrollStack = ({
 
   const setupLenis = useCallback(() => {
     if (useWindowScroll) {
-      const lenis = new Lenis({
-        duration: 1.2,
-        easing: (t: number) => Math.min(1, 1.001 - 2 ** (-10 * t)),
-        smoothWheel: true,
-        touchMultiplier: 2,
-        infinite: false,
-        wheelMultiplier: 1,
-        lerp: 0.1,
-        syncTouch: true,
-        syncTouchLerp: 0.075,
-      });
-
-      lenis.on("scroll", handleScroll);
-
-      const raf = (time: number) => {
-        lenis.raf(time);
-        animationFrameRef.current = window.requestAnimationFrame(raf);
-      };
-
-      animationFrameRef.current = window.requestAnimationFrame(raf);
-      lenisRef.current = lenis;
+      // Use native window scrolling for reliability on long pages.
+      lenisRef.current = null;
       return;
     }
 

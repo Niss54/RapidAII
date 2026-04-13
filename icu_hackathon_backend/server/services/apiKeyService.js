@@ -9,12 +9,16 @@ const MASK_SEGMENT = "xxxxxxxx";
 
 const PLAN_USAGE_LIMITS = {
   free: 1000,
+  premium_monthly: 25000,
+  premium_yearly: 25000,
   pro: 100000,
   hospital: 1000000,
 };
 
 const PLAN_EXPIRY_DAYS = {
   free: 30,
+  premium_monthly: 30,
+  premium_yearly: 365,
   pro: 365,
   hospital: 3650,
 };
@@ -42,7 +46,7 @@ function ensureUserId(userId) {
 function normalizePlanType(planType) {
   const normalized = String(planType || "free").trim().toLowerCase();
   if (!VALID_PLAN_TYPES.has(normalized)) {
-    throw new Error("planType must be one of: free, pro, hospital");
+    throw new Error("planType must be one of: free, premium_monthly, premium_yearly, pro, hospital");
   }
 
   return normalized;
@@ -387,6 +391,26 @@ async function regenerateApiKeyForUser(userId) {
   };
 }
 
+async function upgradeApiKeyPlanForUser(userId, planType) {
+  const normalizedUserId = ensureUserId(userId);
+  const normalizedPlanType = normalizePlanType(planType);
+
+  await deactivateActiveApiKeysByUserId(normalizedUserId);
+
+  const created = await generateApiKey(normalizedUserId, normalizedPlanType);
+  const usageAwareMetadata = await withResolvedUsageCount(created.metadata);
+
+  return {
+    apiKey: created.apiKey,
+    metadata: usageAwareMetadata,
+    maskedApiKey: maskApiKey({
+      rawApiKey: created.apiKey,
+      keyHint: usageAwareMetadata.key_hint,
+    }),
+    upgraded: true,
+  };
+}
+
 async function countApiUsageForRange(apiKey, rangeStart, rangeEnd) {
   if (!dependencies.isSupabaseConfigured()) {
     throw new Error("Supabase is not configured. Configure SUPABASE_URL and service role key first.");
@@ -464,14 +488,18 @@ function resetApiKeyServiceForTests() {
 module.exports = {
   API_KEY_PREFIX,
   RANDOM_SEGMENT_LENGTH,
+  PLAN_USAGE_LIMITS,
+  PLAN_EXPIRY_DAYS,
   maskApiKey,
   generateApiKey,
   hashApiKey,
+  normalizePlanType,
   findApiKeyByRawValue,
   findLatestApiKeyByUserId,
   findLatestValidApiKeyByUserId,
   getOrCreateApiKeyForUser,
   regenerateApiKeyForUser,
+  upgradeApiKeyPlanForUser,
   countApiUsageForRange,
   logApiUsage,
   isApiKeyExpired,

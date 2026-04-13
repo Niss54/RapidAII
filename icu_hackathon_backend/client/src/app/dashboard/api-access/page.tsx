@@ -15,6 +15,33 @@ import {
 const DEFAULT_USER_ID = "doctor-101";
 const USER_ID_STORAGE_KEY = "rapidai-api-access-user-id";
 
+const PLAN_COMPARISON_ROWS: Array<{
+  feature: string;
+  freeTier: string;
+  paidTier: string;
+}> = [
+  {
+    feature: "Daily API quota",
+    freeTier: "1,000 requests/day",
+    paidTier: "25,000 requests/day",
+  },
+  {
+    feature: "Key validity",
+    freeTier: "30 days",
+    paidTier: "30 days (monthly) / 365 days (yearly)",
+  },
+  {
+    feature: "Pricing",
+    freeTier: "$0",
+    paidTier: "$5/month or $60/year",
+  },
+  {
+    feature: "Checkout mode",
+    freeTier: "No payment needed",
+    paidTier: "Razorpay test (demo)",
+  },
+];
+
 function formatDateTime(value: string | null): string {
   if (!value) {
     return "Not set";
@@ -315,6 +342,61 @@ export default function ApiAccessPage() {
               />
             </div>
           </article>
+        </section>
+
+        <section className="surface p-6 md:p-8">
+          <p className="kicker">Free Vs Paid</p>
+          <h2 className="mt-2 text-2xl font-semibold">API Access Plans</h2>
+          <p className="mt-2 muted max-w-3xl">
+            Free tier remains available for quick testing. Paid premium plans add higher quota with either monthly or
+            yearly billing in demo Razorpay mode.
+          </p>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <article className="quick-card p-4">
+              <p className="kicker">Free Tier</p>
+              <p className="mt-2 text-lg font-semibold text-slate-100">Best for evaluation and local development</p>
+              <p className="mt-1 text-sm text-slate-300">Auto-created through My Key endpoint and dashboard login.</p>
+            </article>
+
+            <article className="quick-card p-4 border-emerald-500/40 bg-emerald-500/12">
+              <p className="kicker text-emerald-300">Premium Tier</p>
+              <p className="mt-2 text-lg font-semibold text-emerald-100">Best for production API usage</p>
+              <p className="mt-1 text-sm text-emerald-200/90">
+                Monthly: $5. Yearly: $60. Test checkout integrated with Razorpay test mode.
+              </p>
+            </article>
+          </div>
+
+          <div className="mt-4 overflow-x-auto rounded-xl border border-slate-700/70">
+            <table className="min-w-full divide-y divide-slate-700/70 text-left text-sm">
+              <thead className="bg-slate-900/70 text-xs uppercase tracking-[0.15em] text-slate-300">
+                <tr>
+                  <th className="px-4 py-3">Feature</th>
+                  <th className="px-4 py-3">Free</th>
+                  <th className="px-4 py-3">Paid</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800 bg-slate-950/50 text-slate-200">
+                {PLAN_COMPARISON_ROWS.map((row) => (
+                  <tr key={row.feature}>
+                    <td className="px-4 py-3">{row.feature}</td>
+                    <td className="px-4 py-3">{row.freeTier}</td>
+                    <td className="px-4 py-3">{row.paidTier}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Link href="/dashboard/premium" className="btn-base btn-green px-4 py-2 text-sm">
+              Upgrade To Premium
+            </Link>
+            <Link href="/docs/api" className="btn-base btn-ghost px-4 py-2 text-sm">
+              API Docs
+            </Link>
+          </div>
         </section>
       </main>
 

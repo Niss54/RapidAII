@@ -204,7 +204,7 @@ export default function ICUSummaryPanel() {
                       ))}
                     </Pie>
                     <Tooltip
-                      formatter={(value: number, name: string) => [`${value}`, name]}
+                      formatter={(value, name) => [`${value ?? ""}`, name]}
                       contentStyle={{
                         background: "rgba(3, 7, 18, 0.94)",
                         border: "1px solid rgba(148, 163, 184, 0.28)",

@@ -11,6 +11,7 @@ const navItems = [
   { href: "/chat", label: "Patient Chat" },
   { href: "/dashboard", label: "Dashboard" },
   { href: "/docs/api", label: "Docs" },
+  { href: "/dashboard/premium", label: "Premium API" },
 ];
 
 const rapidLogoSrc = "/assets/rapid.png?v=20260409";

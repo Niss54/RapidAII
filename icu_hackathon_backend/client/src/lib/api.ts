@@ -377,6 +377,70 @@ export type ApiKeyRegenerateResponse = {
   regenerated: boolean;
 };
 
+export type BillingPlanCode = "premium_monthly" | "premium_yearly";
+
+export type BillingPlan = {
+  code: BillingPlanCode;
+  name: string;
+  billing_cycle: "monthly" | "yearly";
+  amount: number;
+  amount_display: string;
+  currency: string;
+  usage_limit: number;
+  highlights: string[];
+};
+
+export type BillingPlansResponse = {
+  gateway: string;
+  mode: "test" | string;
+  configured?: boolean;
+  plans: BillingPlan[];
+};
+
+export type BillingCheckoutResponse = {
+  status: "created" | string;
+  mode: "test" | string;
+  user_id: string;
+  gateway: string;
+  razorpay_key_id: string;
+  order: {
+    id: string;
+    receipt?: string;
+    amount: number;
+    amount_subunits: number;
+    amount_display: string;
+    currency: string;
+    plan_code: BillingPlanCode;
+    billing_cycle: "monthly" | "yearly";
+  };
+  plan: BillingPlan;
+};
+
+export type BillingConfirmResponse = {
+  status: "active" | string;
+  mode: "test" | string;
+  user_id: string;
+  plan: BillingPlan;
+  api_key: string;
+  api_key_masked: string;
+  usage: {
+    usage_limit: number;
+    usage_count: number;
+  };
+  subscription: {
+    plan_type: string;
+    created_at: string;
+    expires_at: string | null;
+  };
+  payment: {
+    gateway: string;
+    order_id: string;
+    payment_id: string;
+    signature_verified?: boolean;
+    status?: string;
+  };
+};
+
 const SERVER_BASE = process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:4000";
 const ANALYTICS_BASE = process.env.NEXT_PUBLIC_ANALYTICS_URL ?? "http://localhost:8080";
 const API_KEY_STORAGE_KEY = "rapidai-runtime-api-key";
@@ -469,7 +533,7 @@ function resolveRuntimeApiUserId(): string {
 
 function isPublicApiPath(path: string): boolean {
   const normalized = String(path || "").trim().toLowerCase();
-  return normalized === "/health" || normalized.startsWith("/api-key");
+  return normalized === "/health" || normalized.startsWith("/api-key") || normalized.startsWith("/billing");
 }
 
 async function parseJsonPayload(response: Response): Promise<Record<string, unknown>> {
@@ -611,6 +675,19 @@ function normalizeApiAccessUserId(userId: string): string {
   return normalized;
 }
 
+function normalizeBillingPlanCode(planCode: string): BillingPlanCode {
+  const normalized = String(planCode || "").trim().toLowerCase();
+  if (normalized === "premium_yearly") {
+    return "premium_yearly";
+  }
+
+  if (normalized === "premium_monthly") {
+    return "premium_monthly";
+  }
+
+  throw new Error("planCode must be premium_monthly or premium_yearly");
+}
+
 export function toDataUrl(base64Audio: string): string {
   return `data:audio/mpeg;base64,${base64Audio}`;
 }
@@ -643,6 +720,59 @@ export async function regenerateMyApiKey(userId: string): Promise<ApiKeyRegenera
     headers: {
       "x-user-id": normalizedUserId,
     },
+  });
+}
+
+export async function fetchBillingPlans(): Promise<BillingPlansResponse> {
+  return requestJson("/billing/plans");
+}
+
+export async function createBillingCheckout(payload: {
+  userId: string;
+  planCode: BillingPlanCode;
+  gateway?: string;
+}): Promise<BillingCheckoutResponse> {
+  const normalizedUserId = normalizeApiAccessUserId(payload.userId);
+  const normalizedPlanCode = normalizeBillingPlanCode(payload.planCode);
+
+  return requestJson("/billing/checkout", {
+    method: "POST",
+    body: JSON.stringify({
+      userId: normalizedUserId,
+      planCode: normalizedPlanCode,
+      gateway: String(payload.gateway || "razorpay_test"),
+    }),
+  });
+}
+
+export async function confirmBillingPayment(payload: {
+  userId: string;
+  planCode: BillingPlanCode;
+  orderId: string;
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  razorpaySignature?: string;
+  gateway?: string;
+}): Promise<BillingConfirmResponse> {
+  const normalizedUserId = normalizeApiAccessUserId(payload.userId);
+  const normalizedPlanCode = normalizeBillingPlanCode(payload.planCode);
+  const normalizedOrderId = String(payload.orderId || "").trim();
+
+  if (!normalizedOrderId) {
+    throw new Error("orderId is required");
+  }
+
+  return requestJson("/billing/confirm", {
+    method: "POST",
+    body: JSON.stringify({
+      userId: normalizedUserId,
+      planCode: normalizedPlanCode,
+      orderId: normalizedOrderId,
+      razorpayOrderId: String(payload.razorpayOrderId || normalizedOrderId).trim(),
+      razorpayPaymentId: String(payload.razorpayPaymentId || "").trim(),
+      razorpaySignature: String(payload.razorpaySignature || "").trim(),
+      gateway: String(payload.gateway || "razorpay_test"),
+    }),
   });
 }
 

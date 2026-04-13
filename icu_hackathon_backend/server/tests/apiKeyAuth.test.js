@@ -188,6 +188,27 @@ test("generateApiKey stores hash and returns raw key once", async () => {
   assert.equal(result.metadata.key_hint, insertedPayload.key_hint);
 });
 
+test("generateApiKey supports premium monthly and yearly plan types", async () => {
+  const insertedPlans = [];
+
+  apiKeyService.__setApiKeyServiceTestDependencies({
+    isSupabaseConfigured: () => true,
+    getSupabaseClient: () =>
+      createInsertClient((payload) => {
+        insertedPlans.push(payload.plan_type);
+      }),
+    now: () => new Date("2026-04-11T00:00:00.000Z"),
+    randomBytes: (size) => Buffer.alloc(size, 0xcd),
+  });
+
+  const monthly = await apiKeyService.generateApiKey("doctor-202", "premium_monthly");
+  const yearly = await apiKeyService.generateApiKey("doctor-202", "premium_yearly");
+
+  assert.equal(monthly.metadata.plan_type, "premium_monthly");
+  assert.equal(yearly.metadata.plan_type, "premium_yearly");
+  assert.deepEqual(insertedPlans, ["premium_monthly", "premium_yearly"]);
+});
+
 test("validateApiKey attaches user_id to request context", async () => {
   const rawApiKey = "rapid_live_0123456789abcdef0123456789abcdef";
   const expectedHash = apiKeyService.hashApiKey(rawApiKey);

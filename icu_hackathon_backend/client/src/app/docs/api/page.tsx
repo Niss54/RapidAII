@@ -161,6 +161,9 @@ const endpointDocs: EndpointDoc[] = [
 
 const FREE_TIER_USAGE_LIMIT = "1000 requests";
 const FREE_TIER_EXPIRY_DURATION = "30 days";
+const PREMIUM_MONTHLY_PRICE = "$5/month";
+const PREMIUM_YEARLY_PRICE = "$60/year";
+const PREMIUM_USAGE_LIMIT = "25,000 requests/day";
 const SUPPORTED_ENDPOINT_PATHS = endpointDocs.map((doc) => doc.path);
 const QUICKSTART_TELEMETRY_CURL = `curl -X POST http://localhost:4000/telemetry/update \\
 -H "x-api-key: YOUR_API_KEY" \\
@@ -198,7 +201,7 @@ function CodeBlock({ title, code }: { title: string; code: string }) {
 
 export default function ApiDocsPage() {
   return (
-    <div className="page-shell pb-10">
+    <div className="page-shell page-static-backdrop pb-10">
       <SiteNavbar />
 
       <main className="container-wrap mt-8 space-y-6">
@@ -213,7 +216,7 @@ export default function ApiDocsPage() {
         <section className="surface border border-emerald-500/35 bg-emerald-500/10 p-6 md:p-8">
           <p className="kicker text-emerald-300">Developer Access</p>
           <h2 className="mt-2 text-2xl font-semibold text-emerald-100">
-            Free developer API key available instantly after login.
+            Free and premium API key plans are available.
           </h2>
 
           <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -233,6 +236,20 @@ export default function ApiDocsPage() {
             </article>
           </div>
 
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <article className="quick-card p-4">
+              <p className="kicker">Premium Monthly</p>
+              <p className="mt-2 text-lg font-semibold text-slate-100">{PREMIUM_MONTHLY_PRICE}</p>
+              <p className="mt-1 text-sm text-slate-300">{PREMIUM_USAGE_LIMIT}</p>
+            </article>
+
+            <article className="quick-card p-4">
+              <p className="kicker">Premium Yearly</p>
+              <p className="mt-2 text-lg font-semibold text-slate-100">{PREMIUM_YEARLY_PRICE}</p>
+              <p className="mt-1 text-sm text-slate-300">{PREMIUM_USAGE_LIMIT}</p>
+            </article>
+          </div>
+
           <div className="mt-4 flex flex-wrap gap-2">
             {SUPPORTED_ENDPOINT_PATHS.map((path) => (
               <span
@@ -247,6 +264,9 @@ export default function ApiDocsPage() {
           <div className="mt-5">
             <Link href="/dashboard/api-access" className="btn-base btn-green px-5 py-2 text-sm">
               Generate Free Key
+            </Link>
+            <Link href="/dashboard/premium" className="btn-base btn-ghost ml-2 px-5 py-2 text-sm">
+              Open Premium Plans
             </Link>
           </div>
         </section>

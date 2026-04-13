@@ -79,12 +79,19 @@ create table if not exists public.api_keys (
   user_id text not null,
   api_key text not null unique,
   key_hint text,
-  plan_type text not null check (plan_type in ('free', 'pro', 'hospital')),
+  plan_type text not null check (plan_type in ('free', 'premium_monthly', 'premium_yearly', 'pro', 'hospital')),
   usage_limit integer not null check (usage_limit >= 0),
   created_at timestamptz not null default timezone('utc', now()),
   expires_at timestamptz,
   is_active boolean not null default true
 );
+
+alter table public.api_keys
+  drop constraint if exists api_keys_plan_type_check;
+
+alter table public.api_keys
+  add constraint api_keys_plan_type_check
+  check (plan_type in ('free', 'premium_monthly', 'premium_yearly', 'pro', 'hospital'));
 
 alter table public.api_keys
   add column if not exists key_hint text;

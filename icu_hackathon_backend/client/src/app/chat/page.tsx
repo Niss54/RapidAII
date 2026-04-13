@@ -72,7 +72,8 @@ type UiCopy = {
 
 const UI_COPY_BY_LANGUAGE: Record<UiLanguage, UiCopy> = {
   en: {
-    subtitle: "Rapid AI can help with patient status, ICU summaries, risk explanations, and escalation guidance.",
+    subtitle:
+      "Rapid AI can help with patient status, ICU summaries, trend-based risk explanations, escalation guidance, and quick voice-assisted next steps for bedside care teams.",
     placeholder: "Ask anything",
     patientChat: "Patient Chat",
     startVoiceCall: "Start Voice Call",

@@ -376,8 +376,6 @@ export default function VoiceCallPostConnectUI({
       <div className="voice-post-bg voice-post-bg-grid" />
       <div className="voice-post-bg voice-post-bg-glow" />
 
-      <p className="voice-post-ghost-text">{copy.heading}</p>
-
       <div className="voice-post-content">
         <div className="voice-post-orb-shell">
           <div
@@ -403,8 +401,8 @@ export default function VoiceCallPostConnectUI({
             <Image
               src="/assets/rapid.png?v=20260409"
               alt="Rapid AI"
-              width={42}
-              height={42}
+              width={62}
+              height={62}
               className="voice-post-logo"
               unoptimized
               priority

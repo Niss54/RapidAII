@@ -14,6 +14,7 @@ const summaryRoutes = require("./routes/summary");
 const simulatorRoutes = require("./routes/simulator");
 const integrationRoutes = require("./routes/integration");
 const apiKeyRoutes = require("./routes/apiKey");
+const billingRoutes = require("./routes/billing");
 const whatsappWebhookRoutes = require("./routes/whatsappWebhook");
 
 function hasPlaceholderValue(value) {
@@ -39,6 +40,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/api-key", apiKeyRoutes);
+app.use("/billing", billingRoutes);
 
 const whatsappWebhookActive = isWhatsAppWebhookActive();
 if (whatsappWebhookActive) {

@@ -231,16 +231,25 @@ export default function Orb({
     }
 
     let renderer: Renderer;
-    let gl: WebGLRenderingContext;
+    let gl: Renderer["gl"];
     let geometry: Triangle;
     let program: Program;
     let mesh: Mesh;
+    let canvas: HTMLCanvasElement | null = null;
 
     try {
       renderer = new Renderer({ alpha: true, premultipliedAlpha: false });
       gl = renderer.gl;
       gl.clearColor(0, 0, 0, 0);
-      container.appendChild(gl.canvas);
+
+      const domCanvas = gl.canvas;
+      if (!(domCanvas instanceof HTMLCanvasElement)) {
+        reportError("Orb canvas is not DOM-renderable");
+        return;
+      }
+
+      canvas = domCanvas;
+      container.appendChild(canvas);
 
       geometry = new Triangle(gl);
       program = new Program(gl, {
@@ -249,7 +258,7 @@ export default function Orb({
         uniforms: {
           iTime: { value: 0 },
           iResolution: {
-            value: new Vec3(gl.canvas.width, gl.canvas.height, gl.canvas.width / gl.canvas.height),
+            value: new Vec3(canvas.width, canvas.height, canvas.width / canvas.height),
           },
           hue: { value: hue },
           hover: { value: 0 },
@@ -266,6 +275,12 @@ export default function Orb({
       return;
     }
 
+    if (!canvas) {
+      return;
+    }
+
+    const canvasEl = canvas;
+
     function resize() {
       if (!container) {
         return;
@@ -275,9 +290,9 @@ export default function Orb({
       const width = container.clientWidth;
       const height = container.clientHeight;
       renderer.setSize(width * dpr, height * dpr);
-      gl.canvas.style.width = `${width}px`;
-      gl.canvas.style.height = `${height}px`;
-      program.uniforms.iResolution.value.set(gl.canvas.width, gl.canvas.height, gl.canvas.width / gl.canvas.height);
+      canvasEl.style.width = `${width}px`;
+      canvasEl.style.height = `${height}px`;
+      program.uniforms.iResolution.value.set(canvasEl.width, canvasEl.height, canvasEl.width / canvasEl.height);
     }
 
     window.addEventListener("resize", resize);
@@ -346,8 +361,8 @@ export default function Orb({
         container.removeEventListener("mouseleave", handleMouseLeave);
       }
 
-      if (gl.canvas.parentNode === container) {
-        container.removeChild(gl.canvas);
+      if (canvasEl.parentNode === container) {
+        container.removeChild(canvasEl);
       }
 
       gl.getExtension("WEBGL_lose_context")?.loseContext();

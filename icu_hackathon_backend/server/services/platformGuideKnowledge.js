@@ -28,8 +28,10 @@ const README_ALIGNED_CONTEXT = Object.freeze({
   apiKeyFlow: [
     "GET /api-key/my-key with x-user-id returns metadata and auto-creates a key when needed",
     "POST /api-key/regenerate with x-user-id rotates the key and returns raw api_key once",
+    "POST /api-key/upgrade enables paid premium plans (premium_monthly or premium_yearly)",
+    "Billing demo endpoints /billing/plans, /billing/checkout, and /billing/confirm use Razorpay test mode",
     "Protected endpoints require x-api-key, including /telemetry, /voice, /icu, and /integration",
-    "Free developer tier in docs UI: 1000 requests and 30-day expiry",
+    "Free developer tier in docs UI: 1000 requests and 30-day expiry; premium plans: $5/month or $60/year",
   ],
   developerUsage: [
     "Core routes: /telemetry/update, /voice/query, /icu/summary, /icu/timeline, /integration/status",
@@ -58,7 +60,7 @@ const PLATFORM_GUIDE_REPLIES = Object.freeze({
     OVERVIEW:
       "Rapid AI is a real-time ICU telemetry intelligence platform. To start, generate an API key from /dashboard/api-access or /api-key/my-key, send telemetry to /telemetry/update, monitor /icu/summary and /icu/timeline, and use /voice/query for natural-language updates. API docs are available at /docs/api.",
     API_KEY:
-      "For API access, use /dashboard/api-access or call GET /api-key/my-key with x-user-id. Rotate with POST /api-key/regenerate. Use x-api-key on protected routes such as /telemetry, /voice, /icu, and /integration. The docs free tier shows 1000 requests and 30-day expiry.",
+      "For API access, use /dashboard/api-access or call GET /api-key/my-key with x-user-id. Rotate with POST /api-key/regenerate. Paid upgrades use POST /api-key/upgrade or the demo billing flow at /billing/checkout plus /billing/confirm (Razorpay test mode). Use x-api-key on protected routes such as /telemetry, /voice, /icu, and /integration. Free tier is 1000 requests with 30-day expiry, and premium plans are $5/month or $60/year.",
     DEVELOPER:
       "Developers can start from /docs/api. Core routes include /telemetry/update, /voice/query, /icu/summary, /icu/timeline, and /integration/status. Analytics routes include /api/v1/forecast/next and /api/v1/alerts. Protected calls require x-api-key.",
     HOSPITAL:
