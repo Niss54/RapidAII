@@ -1,13 +1,8 @@
-// Root health-check endpoint for Render
-app.get("/", (_req, res) => {
-  res.status(200).json({
-    status: "ok",
-    service: "rapidai-server"
-  });
-});
+
 require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 
 const express = require("express");
+const app = express();
 const cors = require("cors");
 const { initializeForecastService, getForecastServiceStatus } = require("./services/forecastService");
 const hl7IngestionService = require("./services/hl7IngestionService");
@@ -23,6 +18,13 @@ const integrationRoutes = require("./routes/integration");
 const apiKeyRoutes = require("./routes/apiKey");
 const billingRoutes = require("./routes/billing");
 const whatsappWebhookRoutes = require("./routes/whatsappWebhook");
+// Root health-check endpoint for Render
+app.get("/", (_req, res) => {
+  res.status(200).json({
+    status: "ok",
+    service: "rapidai-server"
+  });
+});
 
 function hasPlaceholderValue(value) {
   return /^your[_-]/i.test(String(value || "").trim());
