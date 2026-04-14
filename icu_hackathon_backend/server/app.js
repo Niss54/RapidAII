@@ -1,3 +1,10 @@
+// Root health-check endpoint for Render
+app.get("/", (_req, res) => {
+  res.status(200).json({
+    status: "ok",
+    service: "rapidai-server"
+  });
+});
 require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 
 const express = require("express");
