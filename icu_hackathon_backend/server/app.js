@@ -61,8 +61,15 @@ app.use("/integration", integrationRoutes);
 const port = Number(process.env.SERVER_PORT || 4000);
 
 async function start() {
-  const forecastStatus = await initializeForecastService();
-  console.log(`Forecast mode: ${forecastStatus.source} (${forecastStatus.message})`);
+  // const forecastStatus = await initializeForecastService();
+  // console.log(`Forecast mode: ${forecastStatus.source} (${forecastStatus.message})`);
+
+  if (process.env.ENABLE_FORECAST === "true") {
+    const forecastStatus = await initializeForecastService();
+    console.log(`Forecast mode: ${forecastStatus.source} (${forecastStatus.message})`);
+  } else {
+    console.log("Forecast service disabled in production environment");
+  }
 
   const hl7Status = hl7IngestionService.startHl7IngestionService();
   console.log(
