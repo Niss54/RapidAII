@@ -279,8 +279,8 @@ export default function StabilityTimeline() {
       const demoTelemetryEvents = (selectedTimeline.events || [])
         .filter((event) => event.eventType === "telemetry")
         .sort((left, right) => {
-          const leftTs = Date.parse(left.createdAt);
-          const rightTs = Date.parse(right.createdAt);
+          const leftTs = Date.parse(left.occurredAt);
+          const rightTs = Date.parse(right.occurredAt);
           return Number.isNaN(leftTs) || Number.isNaN(rightTs) ? 0 : leftTs - rightTs;
         });
 

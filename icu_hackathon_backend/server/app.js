@@ -46,7 +46,10 @@ const whatsappWebhookActive = isWhatsAppWebhookActive();
 if (whatsappWebhookActive) {
   app.use("/whatsapp", whatsappWebhookRoutes);
 }
-
+// Public health-check endpoint for Render
+app.get("/integration/status", (_req, res) => {
+  res.json({ status: "ok" });
+});
 app.use(apiKeyAuthMiddleware);
 
 app.use("/telemetry", telemetryRoutes);
