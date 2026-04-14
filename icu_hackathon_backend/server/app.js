@@ -69,10 +69,23 @@ async function start() {
     `HL7 ingestion active on TCP ${hl7Status.port} -> ${hl7Status.forwardUrl}`
   );
 
-  const serialStatus = serialBridge.startSerialBridge();
-  console.log(
-    `Serial bridge active on ${serialStatus.port} @ ${serialStatus.baudRate} -> ${serialStatus.forwardUrl}`
-  );
+  if (process.env.ENABLE_SERIAL === "true") {
+    // const serialStatus = serialBridge.startSerialBridge();
+    // console.log(
+    //   `Serial bridge active on ${serialStatus.port} @ ${serialStatus.baudRate} -> ${serialStatus.forwardUrl}`
+    // );
+
+    if (process.env.ENABLE_SERIAL === "true") {
+      const serialStatus = serialBridge.startSerialBridge();
+      console.log(
+        `Serial bridge active on ${serialStatus.port} @ ${serialStatus.baudRate} -> ${serialStatus.forwardUrl}`
+      );
+    } else {
+      console.log("Serial bridge disabled in production environment");
+    }
+  } else {
+    console.log("Serial bridge disabled in production environment");
+  }
 
   console.log(
     whatsappWebhookActive
