@@ -3,6 +3,7 @@ const {
   startSimulation,
   stopSimulation,
   getSimulationStatus,
+  syncSimulatorApiKey,
 } = require("../services/simulatorService");
 
 const router = express.Router();
@@ -28,7 +29,12 @@ router.post("/stop", (_req, res) => {
   return res.status(200).json(status);
 });
 
-router.get("/status", (_req, res) => {
+router.get("/status", (req, res) => {
+  const apiKey = readHeaderApiKey(req);
+  if (apiKey) {
+    return res.status(200).json(syncSimulatorApiKey(apiKey));
+  }
+
   return res.status(200).json(getSimulationStatus());
 });
 

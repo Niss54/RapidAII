@@ -14,6 +14,8 @@ const SARVAM_LANGUAGE_MAP = {
   pa: "pa-IN",
   ur: "ur-IN",
   or: "or-IN",
+  as: "as-IN",
+  ne: "ne-NP",
 };
 
 function getVoiceCandidates() {

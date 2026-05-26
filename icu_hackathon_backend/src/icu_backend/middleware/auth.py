@@ -12,6 +12,18 @@ from flask import Request, abort, g
 EXEMPT_PATHS = {"/health"}
 
 
+def _resolve_local_dev_api_key() -> str:
+    configured = os.getenv("API_KEY", "").strip()
+    if not configured or configured.lower().startswith("your_"):
+        return ""
+    return configured
+
+
+def _resolve_local_dev_user_id() -> str:
+    configured = os.getenv("LOCAL_API_USER_ID", "").strip()
+    return configured or "local-dev-user"
+
+
 def _is_protected_path(path: str, api_prefix: str) -> bool:
     if path in EXEMPT_PATHS:
         return False
@@ -207,6 +219,13 @@ def enforce_api_key(request: Request, api_prefix: str) -> None:
     provided = request.headers.get("X-API-Key", "").strip()
     if not provided:
         abort(401, description="Missing x-api-key header")
+
+    local_dev_api_key = _resolve_local_dev_api_key()
+    if local_dev_api_key and provided == local_dev_api_key:
+        g.user_id = _resolve_local_dev_user_id()
+        g.daily_usage_count = None
+        g.api_key_mode = "local-dev"
+        return
 
     hashed_api_key = _hash_api_key(provided)
 

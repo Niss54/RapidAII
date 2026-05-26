@@ -8,12 +8,15 @@ const {
   normalizeLanguage,
   shouldSpeakIntroduction,
   getAlertMode,
+  clearAlertMode,
   appendConversationTurn,
   getConversationHistory,
 } = require("./sessionState");
 const Patient = require("../models/Patient");
 const { logVoiceInteraction } = require("../models/EventLog");
+const { listTimeline } = require("../models/EventLog");
 const platformGuideKnowledge = require("./platformGuideKnowledge");
+const { getTrainedPatientProfile, listTrainedPatientIds } = require("./trainedPatientProfiles");
 
 const DUMMY_PATIENTS = {
   "201": {
@@ -65,6 +68,44 @@ const TIMEOUTS = {
   logMs: Number(process.env.VOICE_LOG_TIMEOUT_MS || 2500),
 };
 
+const LANGUAGE_FALLBACK_ALIAS = Object.freeze({
+  as: "bn",
+  ne: "hi",
+});
+
+const STRICT_LANGUAGE_NAME_MAP = Object.freeze({
+  en: "en",
+  english: "en",
+  hi: "hi",
+  hindi: "hi",
+  bn: "bn",
+  bengali: "bn",
+  bangla: "bn",
+  ta: "ta",
+  tamil: "ta",
+  te: "te",
+  telugu: "te",
+  mr: "mr",
+  marathi: "mr",
+  gu: "gu",
+  gujarati: "gu",
+  kn: "kn",
+  kannada: "kn",
+  ml: "ml",
+  malayalam: "ml",
+  pa: "pa",
+  punjabi: "pa",
+  ur: "ur",
+  urdu: "ur",
+  or: "or",
+  odia: "or",
+  oriya: "or",
+  as: "as",
+  assamese: "as",
+  ne: "ne",
+  nepali: "ne",
+});
+
 function parseTimeout(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -102,9 +143,39 @@ function runInBackground(task) {
     });
 }
 
+function stripSystemInstruction(text) {
+  return String(text || "")
+    .replace(/\[\s*system\s+instruction\s*:[\s\S]*?\]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractStrictLanguageFromInstruction(text) {
+  const raw = String(text || "");
+  const match = raw.match(
+    /\[\s*system\s+instruction\s*:\s*reply\s+strictly\s+in\s+([a-zA-Z\u0900-\u097f\u0980-\u09ff\u0a00-\u0a7f\u0a80-\u0aff\u0b00-\u0b7f\u0b80-\u0bff\u0c00-\u0c7f\u0c80-\u0cff\u0d00-\u0d7f\u0600-\u06ff\s-]+?)\s+language/iu
+  );
+
+  if (!match || !match[1]) {
+    return null;
+  }
+
+  const normalized = String(match[1]).trim().toLowerCase().replace(/\s+/g, " ");
+  return STRICT_LANGUAGE_NAME_MAP[normalized] || null;
+}
+
 function localizedText(language, dictionary, fallback) {
   const lang = normalizeLanguage(language);
-  return dictionary[lang] || fallback;
+  if (dictionary[lang]) {
+    return dictionary[lang];
+  }
+
+  const alias = LANGUAGE_FALLBACK_ALIAS[lang];
+  if (alias && dictionary[alias]) {
+    return dictionary[alias];
+  }
+
+  return fallback;
 }
 
 async function synthesizeSpeechBase64(responseText, responseLanguage) {
@@ -234,8 +305,11 @@ function alertLockText(alertState, language) {
   );
 }
 
-const ALERT_LOCK_CLINICAL_PATTERN =
-  /\b(patient|pt|mrn|pid|icu|telemetry|spo2|bp|heart\s*rate|temperature|risk|summary|alert|critical|emergency|escalation|ventilator|oxygen)\b/i;
+const ALERT_LOCK_NON_QUERY_PATTERN =
+  /^(?:\[?input-blocked-during-alert\]?|voice\s+call\s+started\.?|voice\s+call\s+ended\.?|start\s+voice\s+call|stop\s+voice\s+call)$/i;
+
+const ALERT_LOCK_EXIT_PATTERN =
+  /^(?:stop\s+voice\s+call|voice\s+call\s+ended\.?|end\s+alert|clear\s+alert|cancel\s+alert|alert\s+cleared)$/i;
 
 function shouldBypassAlertLockForText(text) {
   if (!text || typeof text !== "string") {
@@ -251,7 +325,11 @@ function shouldBypassAlertLockForText(text) {
     return false;
   }
 
-  return !ALERT_LOCK_CLINICAL_PATTERN.test(normalized);
+  if (ALERT_LOCK_NON_QUERY_PATTERN.test(normalized)) {
+    return false;
+  }
+
+  return true;
 }
 
 const PATIENT_ID_STOPWORDS = new Set([
@@ -338,15 +416,16 @@ function resolvePlatformGuideTopic(transcript) {
   return "OVERVIEW";
 }
 
-function buildPlatformGuideContext() {
-  return platformGuideKnowledge.buildPlatformGuideContext();
+function buildPlatformGuideContext(options = {}) {
+  return platformGuideKnowledge.buildPlatformGuideContext(options);
 }
 
-function platformGuideText(transcript, language) {
+function platformGuideText(transcript, language, context) {
   return platformGuideKnowledge.buildPlatformGuideReply({
     transcript,
     language,
     normalizeLanguageFn: normalizeLanguage,
+    context,
   });
 }
 
@@ -420,6 +499,59 @@ function withIntroIfNeeded(responseText, language, userId) {
   return `${greetingText(language)} ${responseText}`;
 }
 
+function toDisplayValue(value, fallback = "N/A") {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return String(Math.round(numeric * 100) / 100);
+  }
+
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function patientDetailsTailText(patient, language) {
+  const hasExtended =
+    patient?.diagnosis ||
+    Number.isFinite(Number(patient?.respiratoryRate)) ||
+    Number.isFinite(Number(patient?.map)) ||
+    Number.isFinite(Number(patient?.lactate)) ||
+    Number.isFinite(Number(patient?.urineOutputMlHr)) ||
+    patient?.ventilatorMode ||
+    Number.isFinite(Number(patient?.fio2)) ||
+    patient?.trend ||
+    patient?.recommendedAction ||
+    patient?.wardBed;
+
+  if (!hasExtended) {
+    return "";
+  }
+
+  const diagnosis = toDisplayValue(patient?.diagnosis);
+  const respiratoryRate = toDisplayValue(patient?.respiratoryRate);
+  const map = toDisplayValue(patient?.map);
+  const lactate = toDisplayValue(patient?.lactate);
+  const urine = toDisplayValue(patient?.urineOutputMlHr);
+  const ventilator = toDisplayValue(patient?.ventilatorMode);
+  const fio2 = toDisplayValue(patient?.fio2);
+  const trend = toDisplayValue(patient?.trend);
+  const wardBed = toDisplayValue(patient?.wardBed);
+  const action = toDisplayValue(patient?.recommendedAction);
+
+  return localizedText(
+    language,
+    {
+      en: ` Detailed condition: diagnosis ${diagnosis}, respiratory rate ${respiratoryRate}, MAP ${map}, lactate ${lactate}, urine output ${urine} ml/hr, ventilator ${ventilator}, FiO2 ${fio2}, bed ${wardBed}, trend ${trend}. Recommended action: ${action}`,
+      hi: ` विस्तृत स्थिति: diagnosis ${diagnosis}, respiratory rate ${respiratoryRate}, MAP ${map}, lactate ${lactate}, urine output ${urine} ml/hr, ventilator ${ventilator}, FiO2 ${fio2}, bed ${wardBed}, trend ${trend}. Recommended action: ${action}`,
+      mr: ` सविस्तर स्थिती: diagnosis ${diagnosis}, respiratory rate ${respiratoryRate}, MAP ${map}, lactate ${lactate}, urine output ${urine} ml/hr, ventilator ${ventilator}, FiO2 ${fio2}, bed ${wardBed}, trend ${trend}. Recommended action: ${action}`,
+    },
+    ` Detailed condition: diagnosis ${diagnosis}, respiratory rate ${respiratoryRate}, MAP ${map}, lactate ${lactate}, urine output ${urine} ml/hr, ventilator ${ventilator}, FiO2 ${fio2}, bed ${wardBed}, trend ${trend}. Recommended action: ${action}`
+  );
+}
+
 function patientStatusText(patient, language, explicitName) {
   if (!patient) {
     return askPatientIdentityText(language);
@@ -444,7 +576,7 @@ function patientStatusText(patient, language, explicitName) {
       or: `ରୋଗୀ ${patient.patientId}, ନାମ ${patientName}: ଅକ୍ସିଜେନ ${patient.spo2}, ହୃଦ୍‌ଗତି ${patient.heartRate}, ତାପମାତ୍ରା ${patient.temperature}, ରକ୍ତଚାପ ${patient.bloodPressure}, ଝୁମ୍ପ ସ୍ତର ${patient.riskLevel}।`,
     },
     `Patient ${patient.patientId}, name ${patientName}: oxygen ${patient.spo2}, heart rate ${patient.heartRate}, temperature ${patient.temperature}, blood pressure ${patient.bloodPressure}, risk ${patient.riskLevel}.`
-  );
+  ) + patientDetailsTailText(patient, language);
 }
 
 function summaryText(summary, language, source = "live") {
@@ -543,6 +675,7 @@ function getDummySummary() {
 async function resolvePatientProfile(patientId, nameHint) {
   const normalizedId = String(patientId);
   const dummy = DUMMY_PATIENTS[normalizedId];
+  const trained = getTrainedPatientProfile(normalizedId);
   let realPatient = null;
 
   if (!dummy) {
@@ -557,25 +690,79 @@ async function resolvePatientProfile(patientId, nameHint) {
     }
   }
 
-  if (!realPatient && !dummy) {
+  if (!realPatient && !dummy && !trained) {
     return null;
   }
 
-  const base = realPatient ? { ...realPatient } : { ...dummy };
+  const base = realPatient
+    ? { ...(trained || {}), ...realPatient }
+    : dummy
+      ? { ...dummy }
+      : { ...trained };
+
   base.patientId = normalizedId;
-  base.patientName = nameHint || dummy?.patientName || base.patientName || "Unknown";
+  base.patientName = nameHint || base.patientName || dummy?.patientName || trained?.patientName || "Unknown";
   return base;
 }
 
 async function processVoiceQuery({ audioBuffer, text, language, userId }) {
   const sessionId = userId || "default-user";
-  const activeLanguage = normalizeLanguage(language || getLanguage(sessionId) || "en");
+  const rawText = text && String(text).trim().length > 0 ? String(text).trim() : "";
+  const strictLanguage = extractStrictLanguageFromInstruction(rawText);
+  const cleanedText = stripSystemInstruction(rawText);
+  const activeLanguage = normalizeLanguage(strictLanguage || language || getLanguage(sessionId) || "en");
+
+  if (strictLanguage) {
+    setLanguage(strictLanguage, sessionId);
+  }
+
   const sessionHistory = getConversationHistory(sessionId, 8);
   const alertState = getAlertMode();
 
-  if (alertState.active && !shouldBypassAlertLockForText(text)) {
+  if (alertState.active && ALERT_LOCK_EXIT_PATTERN.test(cleanedText || rawText)) {
+    clearAlertMode();
     const responseLanguage = normalizeLanguage(alertState.language || activeLanguage);
-    const transcript = text && text.trim().length > 0 ? text.trim() : "[input-blocked-during-alert]";
+    const responseText = localizedText(
+      responseLanguage,
+      {
+        en: "Alert mode cleared. You can continue normal conversation now.",
+        hi: "अलर्ट मोड बंद कर दिया गया है। अब आप सामान्य बातचीत जारी रख सकते हैं।",
+        bn: "অ্যালার্ট মোড ক্লিয়ার করা হয়েছে। এখন আপনি স্বাভাবিক কথোপকথন চালিয়ে যেতে পারেন।",
+        ta: "அலர்ட் முறை முடிக்கப்பட்டுள்ளது. நீங்கள் தற்போது சாதாரண உரையாடலை தொடரலாம்.",
+        te: "అలర్ట్ మోడ్ క్లియర్ చేయబడింది. ఇప్పుడు మీరు సాధారణ సంభాషణ కొనసాగించవచ్చు.",
+        mr: "अलर्ट मोड बंद केला गेला आहे. आता तुम्ही सामान्य संभाषण सुरू ठेवू शकता.",
+        gu: "એલર્ટ મોડ દૂર કરવામાં આવ્યો છે. હવે તમે સામાન્ય વાતચીત ચાલુ રાખી શકો છો.",
+        kn: "ಅಲರ್ಟ್ ಮೋಡ್ ತೆಗೆದುಹಾಕಲಾಗಿದೆ. ಈಗ ನೀವು ಸಾಮಾನ್ಯ ಸಂಭಾಷಣೆಯನ್ನು ಮುಂದುವರೆಸಬಹುದು.",
+        ml: "അലർട്ട് മോഡ് നീക്കം ചെയ്‌ત્તു. ഇപ്പോൾ നിങ്ങൾ സാധാരണ സംഭാഷണം തുടരാം.",
+        pa: "ਅਲਰਟ ਮੋਡ ਮੁਕੰਮਲ ਹੋ ਚੁੱਕਿਆ ਹੈ। ਹੁਣ ਤੁਸੀਂ ਆਮ ਗੱਲਬਾਤ ਜਾਰੀ ਰੱਖ ਸਕਦੇ ਹੋ।",
+        ur: "الرٹ موڈ ختم کر دیا گیا ہے۔ اب آپ معمول کی گفتگو جاری رکھ سکتے ہیں۔",
+        or: "ଆଲର୍ଟ ମୋଡ୍ କ୍ଲିୟର୍ ହୋଇଛି। ଏବେ ଆପଣ ସାଧାରଣ ଆଲୋଚନା চালାଇପାରିବେ।",
+      },
+      "Alert mode cleared. You can continue normal conversation now."
+    );
+
+    appendConversationTurn(sessionId, {
+      role: "assistant",
+      text: responseText,
+      intent: "ALERT_LOCK",
+      language: responseLanguage,
+    });
+
+    const audioBase64 = await synthesizeSpeechBase64(responseText, responseLanguage);
+
+    return {
+      transcript: cleanedText || rawText,
+      intent: "ALERT_LOCK",
+      patientId: alertState.patientId || null,
+      language: responseLanguage,
+      responseText,
+      audioBase64,
+    };
+  }
+
+  if (alertState.active && !shouldBypassAlertLockForText(cleanedText || rawText)) {
+    const responseLanguage = normalizeLanguage(alertState.language || activeLanguage);
+    const transcript = cleanedText || "[input-blocked-during-alert]";
     const responseText = alertLockText(alertState, responseLanguage);
 
     appendConversationTurn(sessionId, {
@@ -615,7 +802,7 @@ async function processVoiceQuery({ audioBuffer, text, language, userId }) {
           patientId: alertState.patientId || null,
           language: responseLanguage,
           responseText,
-          source: text && text.trim().length > 0 ? "text" : "audio",
+          source: rawText ? "text" : "audio",
         }),
         TIMEOUTS.logMs,
         "voice log"
@@ -632,7 +819,7 @@ async function processVoiceQuery({ audioBuffer, text, language, userId }) {
     };
   }
 
-  let transcript = text && text.trim().length > 0 ? text.trim() : "";
+  let transcript = cleanedText;
 
   if (!transcript) {
     try {
@@ -774,6 +961,7 @@ async function processVoiceQuery({ audioBuffer, text, language, userId }) {
     const shouldLoadSummary =
       resolvedIntent === "ICU_SUMMARY" ||
       resolvedIntent === "GENERAL_QUERY" ||
+      resolvedIntent === "PLATFORM_GUIDE" ||
       Boolean(intentResult.asksForSummary);
 
     if (shouldLoadSummary) {
@@ -788,34 +976,58 @@ async function processVoiceQuery({ audioBuffer, text, language, userId }) {
     const livePatients = Array.isArray(summaryData?.patients) ? summaryData.patients : null;
     const fallbackData = !livePatients || livePatients.length === 0 ? getDummySummary() : null;
     const summary = liveSummary || fallbackData?.summary || null;
+    const patientsForContext =
+      livePatients && livePatients.length > 0
+        ? livePatients
+        : Array.isArray(fallbackData?.patients)
+          ? fallbackData.patients
+          : [];
 
     let llmReply = null;
-    const platformGuide = resolvedIntent === "PLATFORM_GUIDE" ? buildPlatformGuideContext() : null;
-    if (resolvedIntent !== "PLATFORM_GUIDE") {
-      try {
-        llmReply = await withTimeout(
-          generateContextualReply({
+    const platformGuide =
+      resolvedIntent === "PLATFORM_GUIDE"
+        ? buildPlatformGuideContext({
             transcript,
-            responseLanguage,
-            intent: resolvedIntent,
-            emotion: resolvedEmotion,
-            patient,
             summary,
-            sessionHistory,
-            platformGuide,
-          }),
-          TIMEOUTS.replyMs,
-          "reply generation"
-        );
-      } catch {
-        llmReply = null;
-      }
+            patients: patientsForContext,
+          })
+        : null;
+
+    try {
+      llmReply = await withTimeout(
+        generateContextualReply({
+          transcript,
+          responseLanguage,
+          intent: resolvedIntent,
+          emotion: resolvedEmotion,
+          patient,
+          summary,
+          sessionHistory,
+          platformGuide,
+        }),
+        TIMEOUTS.replyMs,
+        "reply generation"
+      );
+    } catch {
+      llmReply = null;
     }
 
-    if (resolvedIntent === "PLATFORM_GUIDE") {
-      responseText = platformGuideText(transcript, responseLanguage);
-    } else if (llmReply && String(llmReply).trim().length > 0) {
+    if (llmReply && String(llmReply).trim().length > 0) {
       responseText = String(llmReply).trim();
+
+      if (resolvedIntent === "PLATFORM_GUIDE" && platformGuide?.topic === "SHORT_INTRO") {
+        responseText = platformGuideText(transcript, responseLanguage, platformGuide);
+      }
+
+      if (resolvedIntent === "PLATFORM_GUIDE" && platformGuide?.topic === "PATIENT_DEMO") {
+        const requiredPids = listTrainedPatientIds();
+        const missing = requiredPids.filter((pid) => !responseText.includes(pid));
+        if (missing.length > 0) {
+          responseText = `${responseText} Demo PIDs: ${requiredPids.join(", ")}.`.trim();
+        }
+      }
+    } else if (resolvedIntent === "PLATFORM_GUIDE") {
+      responseText = platformGuideText(transcript, responseLanguage, platformGuide);
     } else if (resolvedIntent === "PATIENT_STATUS") {
       if (!resolvedPatientId) {
         responseText = askPatientIdentityText(responseLanguage);
@@ -890,7 +1102,7 @@ async function processVoiceQuery({ audioBuffer, text, language, userId }) {
         patientId: resolvedPatientId,
         language: responseLanguage,
         responseText,
-        source: text && text.trim().length > 0 ? "text" : "audio",
+        source: rawText ? "text" : "audio",
       }),
       TIMEOUTS.logMs,
       "voice log"

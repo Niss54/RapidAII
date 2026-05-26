@@ -25,6 +25,8 @@ const LANGUAGE_LABELS = {
   pa: "Punjabi",
   ur: "Urdu",
   or: "Odia",
+  as: "Assamese",
+  ne: "Nepali",
 };
 
 const INTENT_SCHEMA = {
@@ -48,6 +50,8 @@ const LANGUAGE_KEYWORDS = {
   pa: ["punjabi", "ਪੰਜਾਬੀ"],
   ur: ["urdu", "اردو"],
   or: ["odia", "oriya", "ଓଡ଼ିଆ"],
+  as: ["assamese", "অসমীয়া", "অসমিয়া"],
+  ne: ["nepali", "नेपाली"],
 };
 
 const PATIENT_ID_STOPWORDS = new Set([
@@ -72,6 +76,14 @@ const PATIENT_ID_STOPWORDS = new Set([
 
 const WELLBEING_QUERY_PATTERN =
   /random|joke|motivat|anxious|scared|stress|tense|panic|help me|what should i do|tips|calm|cope|burnout|overwhelmed|pareshan|pressan|tension|ghabra|rote|cry|helpless|how to stay calm/i;
+
+function stripSystemInstruction(commandText) {
+  const raw = String(commandText || "");
+  return raw
+    .replace(/\[\s*system\s+instruction\s*:[\s\S]*?\]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function sanitizePatientId(rawValue) {
   if (!rawValue) {
@@ -126,12 +138,12 @@ function detectLanguageFromText(text) {
 }
 
 function detectIntentHeuristic(commandText) {
-  const text = String(commandText || "").toLowerCase();
+  const text = stripSystemInstruction(commandText).toLowerCase();
   const patientId = extractPatientIdFromText(text);
 
   const emotion = detectEmotionHeuristic(text);
   const wantsLanguageSwitch =
-    /switch|change|language|speak|speak in|talk in|respond in|translate/.test(text) ||
+    /switch|change|speak in|talk in|respond in|translate/.test(text) ||
     /भाषा|बदल|bol|bolo/.test(text);
 
   const requestedLanguage = detectLanguageFromText(text);
@@ -146,12 +158,24 @@ function detectIntentHeuristic(commandText) {
     };
   }
 
-  const asksPatientDetails =
-    /status|condition|risk|detail|details|summary|report|oxygen|spo2|heart|bp|temperature|vitals|रिपोर्ट|स्थिति|हाल|सारांश/.test(
+  const asksForSummary =
+    /summary|overview|brief|total|all patients|all patient|ward|icu|overall|snapshot|unit|census|सारांश|ओवरव्यू|कुल/.test(
       text
     );
-  const asksForSummary =
-    /summary|overview|brief|total|all patients|ward|icu|snapshot|सारांश|ओवरव्यू|कुल/.test(text);
+  const asksPatientDetails =
+    /status|condition|risk|detail|details|report|oxygen|spo2|heart|bp|temperature|vitals|रिपोर्ट|स्थिति|हाल/.test(
+      text
+    ) || (/patient|pt|pid|mrn|मरीज|रोगी/.test(text) && /summary|सारांश/.test(text));
+
+  if (asksForSummary && !patientId) {
+    return {
+      intent: "ICU_SUMMARY",
+      patientId: null,
+      language: requestedLanguage ? normalizeLanguage(requestedLanguage) : null,
+      emotion,
+      asksForSummary: true,
+    };
+  }
 
   if (WELLBEING_QUERY_PATTERN.test(text)) {
     return {
@@ -183,7 +207,7 @@ function detectIntentHeuristic(commandText) {
     };
   }
 
-  if (/icu|ward|overall|all patients|all patient|brief/.test(text)) {
+  if (/icu|ward|overall|all patients|all patient|brief|summary|snapshot/.test(text) && !patientId) {
     return {
       intent: "ICU_SUMMARY",
       patientId: null,
@@ -229,9 +253,10 @@ function detectEmotionHeuristic(text) {
 }
 
 async function detectIntent(commandText) {
+  const cleanedCommandText = stripSystemInstruction(commandText);
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    return detectIntentHeuristic(commandText);
+    return detectIntentHeuristic(cleanedCommandText);
   }
 
   const model = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
@@ -262,12 +287,12 @@ Rules:
         },
         {
           role: "user",
-          content: `Command: ${commandText}\nSchema: ${JSON.stringify(INTENT_SCHEMA)}`,
+          content: `Command: ${cleanedCommandText}\nSchema: ${JSON.stringify(INTENT_SCHEMA)}`,
         },
       ],
     });
   } catch {
-    return detectIntentHeuristic(commandText);
+    return detectIntentHeuristic(cleanedCommandText);
   }
 
   const raw = completion.choices?.[0]?.message?.content || "{}";
@@ -280,7 +305,7 @@ Rules:
       intent: "GENERAL_QUERY",
       patientId: null,
       language: null,
-      emotion: detectEmotionHeuristic(commandText),
+      emotion: detectEmotionHeuristic(cleanedCommandText),
       asksForSummary: false,
     };
   }
@@ -296,14 +321,14 @@ Rules:
 
   let patientId = sanitizePatientId(parsed.patientId);
   if (!patientId) {
-    patientId = extractPatientIdFromText(commandText);
+    patientId = extractPatientIdFromText(cleanedCommandText);
   }
 
-  if (intent === "PATIENT_STATUS" && !patientId && WELLBEING_QUERY_PATTERN.test(String(commandText || ""))) {
+  if (intent === "PATIENT_STATUS" && !patientId && WELLBEING_QUERY_PATTERN.test(cleanedCommandText)) {
     intent = "GENERAL_QUERY";
   }
 
-  if (isPlatformGuideQuery(commandText) && intent !== "LANGUAGE_SWITCH") {
+  if (isPlatformGuideQuery(cleanedCommandText) && intent !== "LANGUAGE_SWITCH") {
     intent = "PLATFORM_GUIDE";
     patientId = null;
   }
@@ -353,11 +378,24 @@ async function generateContextualReply({
       ? {
           patientId: patient.patientId,
           patientName: patient.patientName,
+          age: patient.age,
+          sex: patient.sex,
+          diagnosis: patient.diagnosis,
           heartRate: patient.heartRate,
           spo2: patient.spo2,
           temperature: patient.temperature,
           bloodPressure: patient.bloodPressure,
+          respiratoryRate: patient.respiratoryRate,
+          map: patient.map,
+          lactate: patient.lactate,
+          urineOutputMlHr: patient.urineOutputMlHr,
+          ventilatorMode: patient.ventilatorMode,
+          fio2: patient.fio2,
+          trend: patient.trend,
           riskLevel: patient.riskLevel,
+          recommendedAction: patient.recommendedAction,
+          wardBed: patient.wardBed,
+          lastUpdated: patient.lastUpdated,
         }
       : null,
     summary: summary || null,
@@ -377,9 +415,13 @@ Always answer strictly in ${languageLabel} (${normalizedLanguage}) using native 
 If user sounds distressed/anxious, acknowledge emotion briefly, then give clear actionable response.
 If question is non-ICU or casual, still answer politely and helpfully.
 If intent is PLATFORM_GUIDE, answer only from provided platformGuide context and explain requested topic clearly.
+If platformGuide.knowledgeBase.snippets are present, prioritize those snippets and concrete route names from that context.
+If platformGuide.topic is SHORT_INTRO, respond in 1-2 short sentences.
+If platformGuide.topic is LONG_INTRO or FEATURES_WORKFLOW, provide a richer 4-7 sentence explanation with flow (ingestion -> risk -> forecast -> voice/alerts -> timeline).
+If platformGuide.topic is PATIENT_DEMO, include demo patient IDs clearly.
 Never invent patient vitals. Use provided context only.
 Do not claim integrations or features that are not present in context.
-Keep response concise, natural, and spoken-style (2-5 short sentences). No markdown.`,
+Keep response concise, natural, and spoken-style (2-7 short sentences depending on request depth). No markdown.`,
       },
       {
         role: "user",

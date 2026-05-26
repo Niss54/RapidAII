@@ -1,18 +1,16 @@
+const crypto = require("node:crypto");
 const express = require("express");
 const apiKeyService = require("../services/apiKeyService");
-const razorpayService = require("../services/razorpayService");
 
 const router = express.Router();
-const SUPPORTED_GATEWAY = "razorpay_test";
-const DEFAULT_CURRENCY = "INR";
+const DEMO_GATEWAY = "razorpay_test";
 
 const PLAN_CATALOG = Object.freeze([
   {
     code: "premium_monthly",
     name: "Premium Monthly",
     billingCycle: "monthly",
-    amount: 499,
-    currency: DEFAULT_CURRENCY,
+    amountUsd: 5,
     usageLimit: apiKeyService.PLAN_USAGE_LIMITS.premium_monthly,
     highlights: [
       "25,000 API requests per day",
@@ -24,8 +22,7 @@ const PLAN_CATALOG = Object.freeze([
     code: "premium_yearly",
     name: "Premium Yearly",
     billingCycle: "yearly",
-    amount: 4999,
-    currency: DEFAULT_CURRENCY,
+    amountUsd: 60,
     usageLimit: apiKeyService.PLAN_USAGE_LIMITS.premium_yearly,
     highlights: [
       "25,000 API requests per day",
@@ -73,56 +70,17 @@ function resolvePlanCode(value) {
 }
 
 function resolveGateway(value) {
-  const normalized = String(value || SUPPORTED_GATEWAY).trim().toLowerCase();
-  if (normalized !== SUPPORTED_GATEWAY) {
-    throw new Error("Only razorpay_test gateway is supported");
+  const normalized = String(value || DEMO_GATEWAY).trim().toLowerCase();
+  if (normalized !== DEMO_GATEWAY) {
+    throw new Error("Only razorpay_test gateway is supported in demo mode");
   }
 
   return normalized;
 }
 
-function formatCurrencyDisplay(amount, currency) {
-  const normalizedAmount = Number(amount);
-  const normalizedCurrency = String(currency || DEFAULT_CURRENCY).trim().toUpperCase();
-
-  if (!Number.isFinite(normalizedAmount)) {
-    throw new Error("amount must be numeric");
-  }
-
-  const formatter = new Intl.NumberFormat("en-IN", {
-    maximumFractionDigits: 0,
-    minimumFractionDigits: 0,
-  });
-
-  return `${normalizedCurrency} ${formatter.format(normalizedAmount)}`;
-}
-
-function toMinorUnits(amount) {
-  const normalizedAmount = Number(amount);
-  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
-    throw new Error("amount must be a positive number");
-  }
-
-  return Math.round(normalizedAmount * 100);
-}
-
-function sanitizeNoteValue(value, maxLength = 64) {
-  return String(value || "")
-    .trim()
-    .slice(0, maxLength);
-}
-
-function buildReceipt(plan) {
-  return `rapid_${plan.billingCycle}_${Date.now().toString(36)}`.slice(0, 40);
-}
-
-function buildOrderNotes(userId, plan) {
-  return {
-    user_id: sanitizeNoteValue(userId),
-    plan_code: plan.code,
-    billing_cycle: plan.billingCycle,
-    product: "rapidai_premium_api",
-  };
+function generateId(prefix) {
+  const suffix = crypto.randomBytes(6).toString("hex");
+  return `${prefix}_${Date.now()}_${suffix}`;
 }
 
 function buildPlanPayload(plan) {
@@ -130,100 +88,22 @@ function buildPlanPayload(plan) {
     code: plan.code,
     name: plan.name,
     billing_cycle: plan.billingCycle,
-    amount: plan.amount,
-    amount_display: formatCurrencyDisplay(plan.amount, plan.currency),
-    currency: plan.currency,
+    amount_usd: plan.amountUsd,
+    amount_display: `$${plan.amountUsd}`,
     usage_limit: plan.usageLimit,
     highlights: plan.highlights,
   };
 }
 
-function resolveOrderId(value) {
-  const normalized = String(value || "").trim();
-  if (!normalized) {
-    throw new Error("orderId is required");
-  }
-
-  return normalized;
-}
-
-function resolvePaymentId(value) {
-  const normalized = String(value || "").trim();
-  if (!normalized) {
-    throw new Error("razorpayPaymentId is required");
-  }
-
-  return normalized;
-}
-
-function resolveSignature(value) {
-  const normalized = String(value || "").trim();
-  if (!normalized) {
-    throw new Error("razorpaySignature is required");
-  }
-
-  return normalized;
-}
-
-function assertOrderMatchesPlan(order, userId, plan) {
-  const orderAmount = Number(order?.amount || 0);
-  const expectedAmount = toMinorUnits(plan.amount);
-  const orderCurrency = String(order?.currency || "").trim().toUpperCase();
-  const orderNotes = order?.notes && typeof order.notes === "object" ? order.notes : {};
-  const orderUserId = sanitizeNoteValue(orderNotes?.user_id || "");
-  const orderPlanCode = String(orderNotes?.plan_code || "").trim().toLowerCase();
-
-  if (orderAmount !== expectedAmount) {
-    throw new Error("Checkout order amount does not match selected plan");
-  }
-
-  if (orderCurrency !== String(plan.currency || "").trim().toUpperCase()) {
-    throw new Error("Checkout order currency does not match selected plan");
-  }
-
-  if (orderUserId !== sanitizeNoteValue(userId)) {
-    throw new Error("Checkout order does not belong to this user");
-  }
-
-  if (orderPlanCode !== plan.code) {
-    throw new Error("Checkout order does not match selected plan");
-  }
-}
-
-function assertPaymentMatchesOrder(payment, orderId, plan) {
-  const paymentOrderId = String(payment?.order_id || "").trim();
-  const paymentStatus = String(payment?.status || "").trim().toLowerCase();
-  const paymentAmount = Number(payment?.amount || 0);
-  const paymentCurrency = String(payment?.currency || "").trim().toUpperCase();
-  const expectedAmount = toMinorUnits(plan.amount);
-
-  if (paymentOrderId !== orderId) {
-    throw new Error("Payment does not belong to the provided order");
-  }
-
-  if (!["authorized", "captured"].includes(paymentStatus)) {
-    throw new Error(`Razorpay payment is not successful yet (status: ${paymentStatus || "unknown"})`);
-  }
-
-  if (paymentAmount !== expectedAmount) {
-    throw new Error("Payment amount does not match selected plan");
-  }
-
-  if (paymentCurrency !== String(plan.currency || "").trim().toUpperCase()) {
-    throw new Error("Payment currency does not match selected plan");
-  }
-}
-
 router.get("/plans", (_req, res) => {
   return res.status(200).json({
-    gateway: SUPPORTED_GATEWAY,
+    gateway: DEMO_GATEWAY,
     mode: "test",
-    configured: razorpayService.isRazorpayConfigured(),
     plans: PLAN_CATALOG.map(buildPlanPayload),
   });
 });
 
-router.post("/checkout", async (req, res) => {
+router.post("/checkout", (req, res) => {
   try {
     const userId = resolveUserId(req);
     if (!userId) {
@@ -235,33 +115,19 @@ router.post("/checkout", async (req, res) => {
     const planCode = resolvePlanCode(req?.body?.planCode || req?.body?.planType);
     const gateway = resolveGateway(req?.body?.gateway || req?.body?.paymentGateway);
     const plan = PLAN_LOOKUP[planCode];
-    if (!razorpayService.isRazorpayConfigured()) {
-      return res.status(503).json({
-        error: "Razorpay test credentials are missing on the server. Add them to .env and retry.",
-      });
-    }
-
-    const receipt = buildReceipt(plan);
-    const order = await razorpayService.createOrder({
-      amountSubunits: toMinorUnits(plan.amount),
-      currency: plan.currency,
-      receipt,
-      notes: buildOrderNotes(userId, plan),
-    });
+    const orderId = generateId("order_test");
 
     return res.status(200).json({
       status: "created",
       mode: "test",
       user_id: userId,
       gateway,
-      razorpay_key_id: razorpayService.getPublicKeyId(),
+      razorpay_key_id: "rzp_test_rapid_dummy",
       order: {
-        id: order.id,
-        receipt: String(order?.receipt || receipt),
-        amount: plan.amount,
-        amount_subunits: Number(order?.amount || toMinorUnits(plan.amount)),
-        amount_display: formatCurrencyDisplay(plan.amount, plan.currency),
-        currency: String(order?.currency || plan.currency).trim().toUpperCase(),
+        id: orderId,
+        amount_usd: plan.amountUsd,
+        amount_display: `$${plan.amountUsd}`,
+        currency: "USD",
         plan_code: plan.code,
         billing_cycle: plan.billingCycle,
       },
@@ -286,31 +152,26 @@ router.post("/confirm", async (req, res) => {
     const planCode = resolvePlanCode(req?.body?.planCode || req?.body?.planType);
     const gateway = resolveGateway(req?.body?.gateway || req?.body?.paymentGateway);
     const plan = PLAN_LOOKUP[planCode];
-    if (!razorpayService.isRazorpayConfigured()) {
-      return res.status(503).json({
-        error: "Razorpay test credentials are missing on the server. Add them to .env and retry.",
+
+    const orderIdInput = String(req?.body?.orderId || "").trim();
+    const orderId = orderIdInput || generateId("order_test");
+
+    if (!orderId.startsWith("order_test_")) {
+      return res.status(400).json({
+        error: "Invalid orderId for test checkout",
       });
     }
 
-    const orderId = resolveOrderId(req?.body?.orderId || req?.body?.razorpayOrderId);
-    const paymentId = resolvePaymentId(
-      req?.body?.razorpayPaymentId || req?.body?.paymentId || req?.body?.paymentReference
-    );
-    const signature = resolveSignature(req?.body?.razorpaySignature || req?.body?.signature);
+    const paymentIdInput = String(
+      req?.body?.razorpayPaymentId || req?.body?.paymentId || req?.body?.paymentReference || ""
+    ).trim();
+    const paymentId = paymentIdInput || generateId("pay_test");
 
-    razorpayService.verifyPaymentSignature({
-      orderId,
-      paymentId,
-      signature,
-    });
-
-    const [order, payment] = await Promise.all([
-      razorpayService.fetchOrder(orderId),
-      razorpayService.fetchPayment(paymentId),
-    ]);
-
-    assertOrderMatchesPlan(order, userId, plan);
-    assertPaymentMatchesOrder(payment, orderId, plan);
+    if (!paymentId.startsWith("pay_test_")) {
+      return res.status(400).json({
+        error: "Invalid test payment reference",
+      });
+    }
 
     const upgraded = await apiKeyService.upgradeApiKeyPlanForUser(userId, plan.code);
 
@@ -334,13 +195,11 @@ router.post("/confirm", async (req, res) => {
         gateway,
         order_id: orderId,
         payment_id: paymentId,
-        signature_verified: true,
-        status: String(payment?.status || "").trim().toLowerCase() || "captured",
       },
     });
   } catch (error) {
     return res.status(400).json({
-      error: error instanceof Error ? error.message : "Could not confirm Razorpay payment",
+      error: error instanceof Error ? error.message : "Could not confirm demo payment",
     });
   }
 });

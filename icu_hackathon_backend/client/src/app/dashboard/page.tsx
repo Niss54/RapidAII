@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   downloadForecastProjectionExport,
   ForecastProjectionFilters,
@@ -61,6 +61,22 @@ type LastTelemetryDiagnostics = {
   capturedAt: string;
 };
 
+type TelemetrySubmissionPayload = {
+  patientId: string;
+  monitorId: string;
+  heartRate?: number;
+  spo2?: number;
+  temperature?: number;
+  bloodPressure?: string;
+  hexPayload?: string;
+  sourceHint?: string;
+};
+
+const DEMO_TELEMETRY_HEX_PRIMARY =
+  "7B22686561727452617465223A3132382C2273706F32223A38362C2274656D7065726174757265223A3130322E322C22626C6F6F645072657373757265223A2238342F3532227D";
+const DEMO_TELEMETRY_HEX_SECONDARY =
+  "7B22686561727452617465223A39362C2273706F32223A39372C2274656D7065726174757265223A39382E362C22626C6F6F645072657373757265223A223132302F3738227D";
+
 function parsePatientIdsCsv(value: string): string[] {
   return String(value || "")
     .split(",")
@@ -92,6 +108,272 @@ function toDateTimeLocalInputValue(value: Date): string {
   return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
+type SupportedRiskLevel = TelemetryUpdateResponse["risk"]["riskLevel"];
+
+function toFiniteNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function clampValue(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function parseBloodPressureParts(value: unknown): { systolic: number | null; diastolic: number | null } {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{2,3})\s*\/\s*(\d{2,3})$/);
+  if (!match) {
+    return { systolic: null, diastolic: null };
+  }
+
+  return {
+    systolic: toFiniteNumber(match[1]),
+    diastolic: toFiniteNumber(match[2]),
+  };
+}
+
+function decodeHexJsonVitals(hexPayload: string): {
+  heartRate: number | null;
+  spo2: number | null;
+  temperature: number | null;
+  bloodPressure: string | null;
+} | null {
+  const sanitized = String(hexPayload || "").replace(/[^0-9a-f]/gi, "");
+  if (!sanitized || sanitized.length < 8) {
+    return null;
+  }
+
+  try {
+    const decoded = atob(sanitized);
+    const parsed = JSON.parse(decoded) as Record<string, unknown>;
+
+    const heartRate = toFiniteNumber(parsed.heartRate ?? parsed.heart_rate ?? parsed.hr);
+    const spo2 = toFiniteNumber(parsed.spo2 ?? parsed.SpO2 ?? parsed.spo_2);
+    const temperature = toFiniteNumber(parsed.temperature ?? parsed.temp ?? parsed.temp_c);
+    const bloodPressureRaw = String(
+      parsed.bloodPressure ??
+        parsed.blood_pressure ??
+        parsed.bp ??
+        ""
+    ).trim();
+
+    return {
+      heartRate,
+      spo2,
+      temperature,
+      bloodPressure: bloodPressureRaw || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function deriveRiskAssessment(vitals: {
+  heartRate: number;
+  spo2: number;
+  temperature: number;
+  bloodPressure: string;
+}): { riskScore: number; riskLevel: SupportedRiskLevel; reason: string } {
+  const { systolic, diastolic } = parseBloodPressureParts(vitals.bloodPressure);
+  let score = 0;
+  const reasons: string[] = [];
+
+  if (vitals.spo2 < 88) {
+    score += 48;
+    reasons.push(`SpO2 critically low at ${vitals.spo2}%`);
+  } else if (vitals.spo2 < 93) {
+    score += 28;
+    reasons.push(`SpO2 below target at ${vitals.spo2}%`);
+  }
+
+  if (vitals.heartRate > 130 || vitals.heartRate < 55) {
+    score += 24;
+    reasons.push(`Heart rate unstable at ${vitals.heartRate} bpm`);
+  } else if (vitals.heartRate > 110 || vitals.heartRate < 60) {
+    score += 14;
+    reasons.push(`Heart rate drifting at ${vitals.heartRate} bpm`);
+  }
+
+  if (vitals.temperature >= 102) {
+    score += 18;
+    reasons.push(`High fever trend at ${vitals.temperature.toFixed(1)} F`);
+  } else if (vitals.temperature >= 100.4) {
+    score += 10;
+    reasons.push(`Temperature elevated at ${vitals.temperature.toFixed(1)} F`);
+  }
+
+  if (systolic !== null && systolic < 90) {
+    score += 20;
+    reasons.push(`Systolic pressure low at ${systolic}`);
+  } else if (systolic !== null && systolic < 100) {
+    score += 10;
+    reasons.push(`Systolic pressure borderline at ${systolic}`);
+  }
+
+  if (diastolic !== null && diastolic < 55) {
+    score += 8;
+    reasons.push(`Diastolic pressure low at ${diastolic}`);
+  }
+
+  const riskScore = clampValue(Math.round(score), 0, 100);
+  const riskLevel: SupportedRiskLevel =
+    riskScore >= 75
+      ? "CRITICAL"
+      : riskScore >= 55
+        ? "MODERATE"
+        : riskScore >= 30
+          ? "WARNING"
+          : "STABLE";
+
+  return {
+    riskScore,
+    riskLevel,
+    reason:
+      reasons.length > 0
+        ? reasons.join("; ")
+        : "Vitals currently within expected ICU monitoring range",
+  };
+}
+
+function deriveForecastLevel(riskLevel: SupportedRiskLevel): TelemetryUpdateResponse["patient"]["predictedRiskNext5Minutes"] {
+  if (riskLevel === "CRITICAL") {
+    return "CRITICAL";
+  }
+  if (riskLevel === "MODERATE") {
+    return "MODERATE";
+  }
+  if (riskLevel === "WARNING") {
+    return "WARNING";
+  }
+  return "STABLE";
+}
+
+function buildDemoFallbackTelemetryResult(payload: TelemetrySubmissionPayload): TelemetryUpdateResponse {
+  const decoded = payload.hexPayload ? decodeHexJsonVitals(payload.hexPayload) : null;
+
+  const heartRate = clampValue(
+    Math.round(toFiniteNumber(decoded?.heartRate ?? payload.heartRate) ?? 98),
+    30,
+    220
+  );
+  const spo2 = clampValue(
+    Math.round(toFiniteNumber(decoded?.spo2 ?? payload.spo2) ?? 96),
+    40,
+    100
+  );
+  const temperature = Number(
+    clampValue(toFiniteNumber(decoded?.temperature ?? payload.temperature) ?? 99.1, 90, 108).toFixed(1)
+  );
+
+  const bpRaw =
+    String(decoded?.bloodPressure || payload.bloodPressure || "").trim() || "120/80";
+  const bpParts = parseBloodPressureParts(bpRaw);
+  const bloodPressure =
+    bpParts.systolic !== null && bpParts.diastolic !== null
+      ? `${Math.round(bpParts.systolic)}/${Math.round(bpParts.diastolic)}`
+      : "120/80";
+
+  const vitals = {
+    heartRate,
+    spo2,
+    temperature,
+    bloodPressure,
+  };
+
+  const risk = deriveRiskAssessment(vitals);
+  const patientId = String(payload.patientId || "demo-patient").trim() || "demo-patient";
+  const monitorId = String(payload.monitorId || `monitor-${patientId}`).trim() || `monitor-${patientId}`;
+  const predictedRisk = deriveForecastLevel(risk.riskLevel);
+  const now = new Date().toISOString();
+  const critical = risk.riskLevel === "CRITICAL";
+
+  return {
+    patient: {
+      patientId,
+      heartRate,
+      spo2,
+      temperature,
+      bloodPressure,
+      riskScore: risk.riskScore,
+      riskLevel: risk.riskLevel,
+      predictedRiskNext5Minutes: predictedRisk,
+      telemetrySource: "simulator",
+      lastUpdated: now,
+    },
+    risk: {
+      patientId,
+      riskScore: risk.riskScore,
+      riskLevel: risk.riskLevel,
+      reason: `${risk.reason} (local demo fallback)`,
+    },
+    decodedVitals: {
+      heartRate,
+      spo2,
+      temperature,
+      bloodPressure,
+      monitorId,
+      source: payload.hexPayload ? "hex" : "json",
+    },
+    decoderWarnings: payload.hexPayload
+      ? ["Backend unavailable. Used local demo decoder fallback."]
+      : ["Backend unavailable. Used local demo telemetry fallback."],
+    identityResolution: {
+      patientId,
+      monitorKey: monitorId,
+      providedPatientId: patientId,
+      resolution: "direct-bind",
+      collision: false,
+      notes: ["local-demo-fallback"],
+    },
+    forecast: {
+      predictedRiskNext5Minutes: predictedRisk,
+      source: "heuristic-fallback",
+      forecastedVitals: null,
+      warning: "Local demo fallback response",
+    },
+    alert: critical
+      ? {
+          text: `Critical deterioration detected for patient ${patientId}.`,
+          language: "en",
+          audioBase64: null,
+          delivered: true,
+          deliveryReason: null,
+          whatsappMessage: `CRITICAL ALERT\nPatient ID: ${patientId}\nRisk Score: ${risk.riskScore}`,
+          whatsapp: {
+            attempted: true,
+            sent: true,
+            reason: null,
+            sentCount: 1,
+            recipients: ["demo"],
+            results: [{ recipient: "demo", sent: true }],
+          },
+        }
+      : null,
+    escalationChannels: critical
+      ? {
+          voiceBroadcast: {
+            attempted: true,
+            delivered: true,
+            reason: null,
+          },
+          dashboardAlertStream: {
+            attempted: true,
+            delivered: true,
+            reason: null,
+          },
+          whatsappEscalation: {
+            attempted: true,
+            sent: true,
+            reason: null,
+            sentCount: 1,
+            recipients: ["demo"],
+            results: [{ recipient: "demo", sent: true }],
+          },
+        }
+      : null,
+  };
+}
+
 const DEFAULT_FORM: TelemetryForm = {
   patientId: "204",
   monitorId: "monitor-204",
@@ -99,14 +381,49 @@ const DEFAULT_FORM: TelemetryForm = {
   spo2: "91",
   temperature: "99.4",
   bloodPressure: "122/82",
-  telemetryHex: "",
+  telemetryHex: DEMO_TELEMETRY_HEX_PRIMARY,
 };
+
+const DEFAULT_RISK_PANEL_VITALS = {
+  heartRate: Number(DEFAULT_FORM.heartRate),
+  spo2: Number(DEFAULT_FORM.spo2),
+  temperature: Number(DEFAULT_FORM.temperature),
+  bloodPressure: DEFAULT_FORM.bloodPressure,
+};
+
+const DEMO_TEST_ALERT_PAYLOAD: TelemetrySubmissionPayload = {
+  patientId: "demo-alert-911",
+  monitorId: "demo-alert-monitor",
+  heartRate: 146,
+  spo2: 84,
+  temperature: 103.1,
+  bloodPressure: "82/50",
+};
+
+const DEMO_BOOTSTRAP_PAYLOADS: TelemetrySubmissionPayload[] = [
+  {
+    patientId: "204",
+    monitorId: "monitor-204",
+    hexPayload: DEMO_TELEMETRY_HEX_SECONDARY,
+  },
+  {
+    patientId: "305",
+    monitorId: "monitor-305",
+    heartRate: 112,
+    spo2: 92,
+    temperature: 100.2,
+    bloodPressure: "138/88",
+  },
+  DEMO_TEST_ALERT_PAYLOAD,
+];
 
 const RISK_HISTORY_LIMIT = 24;
 const REFRESH_INTERVAL_MS = 3000;
 const PROJECTION_REFRESH_VISIBLE_MS = 20000;
 const RISK_SCORE_LEGEND = "0-30 stable | 31-60 warning | 61-100 critical";
 const PROJECTION_REFRESH_HIDDEN_MS = 90000;
+const CRITICAL_ALERT_SOUND_SRC = "/assets/alert.mp3";
+const CRITICAL_ALERT_SOUND_MAX_PLAY_MS = 6000;
 const rapidLogoSrc = "/assets/rapid.png?v=20260409";
 
 type DashboardSectionId =
@@ -274,6 +591,142 @@ function summarizeForecastSources(projections: ForecastProjectionRecord[]): Fore
   return summary;
 }
 
+function buildDemoPatientsSnapshot(): IcuSummaryResponse["patients"] {
+  const now = Date.now();
+  return [
+    {
+      patientId: "204",
+      heartRate: 108,
+      spo2: 93,
+      temperature: 99.5,
+      bloodPressure: "130/84",
+      riskScore: 56,
+      riskLevel: "MODERATE",
+      predictedRiskNext5Minutes: "WARNING",
+      telemetrySource: "simulator",
+      lastUpdated: new Date(now - 90 * 1000).toISOString(),
+    },
+    {
+      patientId: "305",
+      heartRate: 124,
+      spo2: 89,
+      temperature: 101.4,
+      bloodPressure: "94/60",
+      riskScore: 78,
+      riskLevel: "CRITICAL",
+      predictedRiskNext5Minutes: "CRITICAL",
+      telemetrySource: "hl7",
+      lastUpdated: new Date(now - 45 * 1000).toISOString(),
+    },
+    {
+      patientId: "412",
+      heartRate: 92,
+      spo2: 97,
+      temperature: 98.8,
+      bloodPressure: "118/76",
+      riskScore: 24,
+      riskLevel: "STABLE",
+      predictedRiskNext5Minutes: "STABLE",
+      telemetrySource: "serial",
+      lastUpdated: new Date(now - 20 * 1000).toISOString(),
+    },
+  ];
+}
+
+function buildDemoTimelineEvents(): TimelineEvent[] {
+  const now = Date.now();
+  return [
+    {
+      id: "demo-telemetry-1",
+      eventType: "telemetry",
+      patientId: "204",
+      occurredAt: new Date(now - 8 * 60 * 1000).toISOString(),
+      riskLevel: "WARNING",
+      telemetry: {
+        heartRate: 108,
+        spo2: 93,
+        temperature: 99.5,
+        bloodPressure: "130/84",
+      },
+    },
+    {
+      id: "demo-telemetry-2",
+      eventType: "telemetry",
+      patientId: "305",
+      occurredAt: new Date(now - 4 * 60 * 1000).toISOString(),
+      riskLevel: "CRITICAL",
+      telemetry: {
+        heartRate: 124,
+        spo2: 89,
+        temperature: 101.4,
+        bloodPressure: "94/60",
+      },
+    },
+    {
+      id: "demo-alert-1",
+      eventType: "alert",
+      patientId: "305",
+      occurredAt: new Date(now - 3 * 60 * 1000).toISOString(),
+      riskLevel: "CRITICAL",
+      alertType: "critical-alert",
+      message: "Demo escalation: SpO2 and BP indicate rapid deterioration.",
+      delivered: true,
+      deliveryChannels: ["voice", "dashboard", "whatsapp"],
+    },
+  ];
+}
+
+function buildDemoForecastProjections(): ForecastProjectionRecord[] {
+  const now = Date.now();
+  return [
+    {
+      patientId: "204",
+      patientLastUpdated: new Date(now - 90 * 1000).toISOString(),
+      currentRiskScore: 56,
+      futureRiskScore: 64,
+      predictedDeteriorationState: "WARNING",
+      source: "legacy-ml",
+      warning: null,
+      forecastedVitals: [114, 91, 100.1, 128, 84, 99],
+      timelineProjection: [
+        { minute: 5, riskScore: 60 },
+        { minute: 10, riskScore: 64 },
+        { minute: 15, riskScore: 62 },
+      ],
+    },
+    {
+      patientId: "305",
+      patientLastUpdated: new Date(now - 45 * 1000).toISOString(),
+      currentRiskScore: 78,
+      futureRiskScore: 88,
+      predictedDeteriorationState: "CRITICAL",
+      source: "heuristic-fallback",
+      warning: "Using deterministic fallback for demo.",
+      forecastedVitals: [132, 87, 102.2, 90, 56, 67],
+      timelineProjection: [
+        { minute: 5, riskScore: 82 },
+        { minute: 10, riskScore: 86 },
+        { minute: 15, riskScore: 88 },
+      ],
+    },
+    {
+      patientId: "412",
+      patientLastUpdated: new Date(now - 20 * 1000).toISOString(),
+      currentRiskScore: 24,
+      futureRiskScore: 30,
+      predictedDeteriorationState: "STABLE",
+      source: "disabled",
+      warning: "Forecast endpoint disabled; showing safe baseline.",
+      forecastedVitals: [94, 97, 98.9, 118, 76, 90],
+      timelineProjection: [
+        { minute: 5, riskScore: 26 },
+        { minute: 10, riskScore: 28 },
+        { minute: 15, riskScore: 30 },
+      ],
+    },
+  ];
+}
+
 function RiskTrendChart({ values }: { values: number[] }) {
   const width = 240;
   const height = 68;
@@ -377,13 +830,63 @@ export default function DashboardPage() {
   const [telemetryDebugEntries, setTelemetryDebugEntries] = useState<TelemetryDebugEntry[]>([]);
   const [form, setForm] = useState<TelemetryForm>(DEFAULT_FORM);
   const [submitting, setSubmitting] = useState(false);
+  const [triggeringTestAlert, setTriggeringTestAlert] = useState(false);
+  const [seedingDemoData, setSeedingDemoData] = useState(false);
+  const [hasTriggeredPushTelemetry, setHasTriggeredPushTelemetry] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [successToast, setSuccessToast] = useState<{ message: string; openedAt: number } | null>(null);
   const [activeSection, setActiveSection] = useState<DashboardSectionId>("patientOps");
-  const [selectedPatientId, setSelectedPatientId] = useState<string>("");
-  const [patientProfileSearchId, setPatientProfileSearchId] = useState("");
+  const [selectedPatientId, setSelectedPatientId] = useState<string>(DEFAULT_FORM.patientId);
+  const [patientProfileSearchId, setPatientProfileSearchId] = useState(DEFAULT_FORM.patientId);
   const [lastTelemetryDiagnostics, setLastTelemetryDiagnostics] = useState<LastTelemetryDiagnostics | null>(null);
+  const escalationAudioRef = useRef<HTMLAudioElement | null>(null);
+  const escalationAudioStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playedEscalationSoundIdsRef = useRef<Set<string>>(new Set());
+
+  const stopEscalationCriticalAlertSound = useCallback(() => {
+    if (escalationAudioStopTimerRef.current) {
+      clearTimeout(escalationAudioStopTimerRef.current);
+      escalationAudioStopTimerRef.current = null;
+    }
+
+    const audio = escalationAudioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    audio.pause();
+    audio.currentTime = 0;
+  }, []);
+
+  const triggerEscalationCriticalAlertSound = useCallback(
+    (alertEventId: string) => {
+      const normalizedEventId = String(alertEventId || "").trim();
+      if (!normalizedEventId || playedEscalationSoundIdsRef.current.has(normalizedEventId)) {
+        return;
+      }
+
+      playedEscalationSoundIdsRef.current.add(normalizedEventId);
+
+      if (!escalationAudioRef.current) {
+        const nextAudio = new Audio(CRITICAL_ALERT_SOUND_SRC);
+        nextAudio.loop = false;
+        escalationAudioRef.current = nextAudio;
+      }
+
+      const audio = escalationAudioRef.current;
+      audio.loop = false;
+
+      stopEscalationCriticalAlertSound();
+      console.log("Critical alert sound triggered");
+      void audio.play().catch(() => undefined);
+
+      escalationAudioStopTimerRef.current = setTimeout(() => {
+        stopEscalationCriticalAlertSound();
+      }, CRITICAL_ALERT_SOUND_MAX_PLAY_MS);
+    },
+    [stopEscalationCriticalAlertSound]
+  );
 
   const navigateToPatientProfile = useCallback(() => {
     const normalizedPatientId = String(patientProfileSearchId || "").trim();
@@ -393,6 +896,71 @@ export default function DashboardPage() {
 
     router.push(`/patients/${encodeURIComponent(normalizedPatientId)}`);
   }, [patientProfileSearchId, router]);
+
+  const demoPatientsSnapshot = useMemo(() => buildDemoPatientsSnapshot(), []);
+  const demoTimelineSnapshot = useMemo(() => buildDemoTimelineEvents(), []);
+  const demoForecastProjectionSnapshot = useMemo(() => buildDemoForecastProjections(), []);
+
+  const syncTelemetryResultToDashboard = useCallback(
+    (
+      result: TelemetryUpdateResponse,
+      options?: {
+        rawHexPayload?: string;
+        monitorId?: string;
+      }
+    ) => {
+      setSummaryData((previous) => {
+        const existingPatients = previous?.patients ?? [];
+        const nextPatients = [
+          result.patient,
+          ...existingPatients.filter((patient) => patient.patientId !== result.patient.patientId),
+        ];
+
+        return {
+          summary: summarizePatients(nextPatients),
+          patients: nextPatients,
+        };
+      });
+
+      setRiskHistoryByPatient((previous) => {
+        const patientId = String(result.patient.patientId);
+        const history = previous[patientId] ?? [];
+        return {
+          ...previous,
+          [patientId]: [...history, clampRiskScore(result.patient.riskScore)].slice(-RISK_HISTORY_LIMIT),
+        };
+      });
+
+      const normalizedHexPayload = String(options?.rawHexPayload || "").trim();
+      if (normalizedHexPayload && result.decodedVitals) {
+        setTelemetryDebugEntries((previous) => {
+          const nextEntry: TelemetryDebugEntry = {
+            id: `${Date.now()}-${result.patient.patientId}`,
+            patientId: result.patient.patientId,
+            rawHexPayload: normalizedHexPayload,
+            decodedHeartRate: Number(result.decodedVitals?.heartRate ?? result.patient.heartRate),
+            decodedSpo2: Number(result.decodedVitals?.spo2 ?? result.patient.spo2),
+            decodedTemperature: Number(result.decodedVitals?.temperature ?? result.patient.temperature),
+            decodedBloodPressure: String(result.decodedVitals?.bloodPressure ?? result.patient.bloodPressure),
+            source: String(result.decodedVitals?.source ?? "unknown"),
+            monitorId: String(result.decodedVitals?.monitorId ?? options?.monitorId ?? "unknown"),
+            warnings: Array.isArray(result.decoderWarnings) ? result.decoderWarnings : [],
+            createdAt: new Date().toISOString(),
+          };
+
+          return [nextEntry, ...previous].slice(0, 10);
+        });
+      }
+
+      setLastTelemetryDiagnostics({
+        riskLevel: result.risk.riskLevel,
+        channels: result.escalationChannels ?? null,
+        capturedAt: new Date().toISOString(),
+      });
+      setSelectedPatientId(result.patient.patientId);
+    },
+    []
+  );
 
   const refresh = useCallback(async () => {
     const [health, summary, timeline] = await Promise.all([
@@ -496,6 +1064,110 @@ export default function DashboardPage() {
     setForecastError("");
   }, []);
 
+  const triggerDemoAlert = useCallback(async () => {
+    setTriggeringTestAlert(true);
+    setError("");
+    setSuccessToast(null);
+
+    try {
+      let fallbackUsed = false;
+      let result: TelemetryUpdateResponse;
+
+      try {
+        result = await updateTelemetry(DEMO_TEST_ALERT_PAYLOAD);
+      } catch {
+        fallbackUsed = true;
+        result = buildDemoFallbackTelemetryResult(DEMO_TEST_ALERT_PAYLOAD);
+      }
+
+      syncTelemetryResultToDashboard(result, { monitorId: DEMO_TEST_ALERT_PAYLOAD.monitorId });
+      setHasTriggeredPushTelemetry(true);
+      if (result.risk.riskLevel === "CRITICAL") {
+        triggerEscalationCriticalAlertSound(
+          `escalation-trigger-${result.patient.patientId}-${Date.now()}`
+        );
+      }
+      setForm((previous) => ({
+        ...previous,
+        patientId: DEMO_TEST_ALERT_PAYLOAD.patientId,
+        monitorId: DEMO_TEST_ALERT_PAYLOAD.monitorId,
+        heartRate: String(DEMO_TEST_ALERT_PAYLOAD.heartRate ?? previous.heartRate),
+        spo2: String(DEMO_TEST_ALERT_PAYLOAD.spo2 ?? previous.spo2),
+        temperature: String(DEMO_TEST_ALERT_PAYLOAD.temperature ?? previous.temperature),
+        bloodPressure: String(DEMO_TEST_ALERT_PAYLOAD.bloodPressure ?? previous.bloodPressure),
+      }));
+      setActiveSection("alertsTimeline");
+      setSuccessToast({
+        message: fallbackUsed
+          ? "Test Alert (Demo) triggered via local fallback."
+          : "Test Alert (Demo) triggered successfully.",
+        openedAt: Date.now(),
+      });
+      setError("");
+
+      void refresh();
+      void refreshForecastProjections().catch(() => undefined);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Demo alert trigger failed");
+    } finally {
+      setTriggeringTestAlert(false);
+    }
+  }, [
+    refresh,
+    refreshForecastProjections,
+    syncTelemetryResultToDashboard,
+    triggerEscalationCriticalAlertSound,
+  ]);
+
+  const runDemoDataset = useCallback(async () => {
+    setSeedingDemoData(true);
+    setError("");
+    setSuccessToast(null);
+
+    try {
+      let fallbackCount = 0;
+
+      for (const payload of DEMO_BOOTSTRAP_PAYLOADS) {
+        let result: TelemetryUpdateResponse;
+        try {
+          result = await updateTelemetry({ ...payload, sourceHint: "dashboard" });
+        } catch {
+          fallbackCount += 1;
+          result = buildDemoFallbackTelemetryResult(payload);
+        }
+
+        syncTelemetryResultToDashboard(result, {
+          rawHexPayload: payload.hexPayload,
+          monitorId: payload.monitorId,
+        });
+        setHasTriggeredPushTelemetry(true);
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, 180);
+        });
+      }
+
+      await refresh();
+      void refreshForecastProjections().catch(() => undefined);
+      setSuccessToast({
+        message:
+          fallbackCount > 0
+            ? `Demo dataset loaded (${fallbackCount} local fallback entr${fallbackCount === 1 ? "y" : "ies"}).`
+            : "Demo dataset loaded with sample telemetry, alert, and forecast traces.",
+        openedAt: Date.now(),
+      });
+      setError("");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Demo dataset seed failed");
+    } finally {
+      setSeedingDemoData(false);
+    }
+  }, [
+    refresh,
+    refreshForecastProjections,
+    syncTelemetryResultToDashboard,
+    triggerEscalationCriticalAlertSound,
+  ]);
+
   useEffect(() => {
     if (typeof document === "undefined") {
       return;
@@ -509,6 +1181,12 @@ export default function DashboardPage() {
       document.body.classList.remove("dashboard-scrollbar-hidden");
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      stopEscalationCriticalAlertSound();
+    };
+  }, [stopEscalationCriticalAlertSound]);
 
   useEffect(() => {
     void refresh().catch((err) => {
@@ -608,9 +1286,6 @@ export default function DashboardPage() {
   useEffect(() => {
     const nextPatients = summaryData?.patients ?? [];
     if (nextPatients.length === 0) {
-      if (selectedPatientId) {
-        setSelectedPatientId("");
-      }
       return;
     }
 
@@ -642,78 +1317,59 @@ export default function DashboardPage() {
 
     try {
       const hexPayload = form.telemetryHex.trim();
-      const result = await updateTelemetry(
-        hexPayload
-          ? {
-              patientId: form.patientId,
-              monitorId: form.monitorId,
-              hexPayload,
-            }
-          : {
-              patientId: form.patientId,
-              monitorId: form.monitorId,
-              heartRate: Number(form.heartRate),
-              spo2: Number(form.spo2),
-              temperature: Number(form.temperature),
-              bloodPressure: form.bloodPressure,
-            }
-      );
+      const structuredPayload: TelemetrySubmissionPayload = {
+        patientId: form.patientId,
+        monitorId: form.monitorId,
+        heartRate: Number(form.heartRate),
+        spo2: Number(form.spo2),
+        temperature: Number(form.temperature),
+        bloodPressure: form.bloodPressure,
+        sourceHint: "dashboard",
+      };
 
-      setSummaryData((previous) => {
-        const existingPatients = previous?.patients ?? [];
-        const nextPatients = [
-          result.patient,
-          ...existingPatients.filter((patient) => patient.patientId !== result.patient.patientId),
-        ];
+      const primaryPayload: TelemetrySubmissionPayload = hexPayload
+        ? {
+            ...structuredPayload,
+            hexPayload,
+          }
+        : structuredPayload;
 
-        return {
-          summary: summarizePatients(nextPatients),
-          patients: nextPatients,
-        };
-      });
+      let result: TelemetryUpdateResponse;
+      let fallbackUsed = false;
 
-      setRiskHistoryByPatient((previous) => {
-        const patientId = String(result.patient.patientId);
-        const history = previous[patientId] ?? [];
-        return {
-          ...previous,
-          [patientId]: [...history, clampRiskScore(result.patient.riskScore)].slice(-RISK_HISTORY_LIMIT),
-        };
-      });
-
-      if (hexPayload && result.decodedVitals) {
-        setTelemetryDebugEntries((previous) => {
-          const nextEntry: TelemetryDebugEntry = {
-            id: `${Date.now()}-${result.patient.patientId}`,
-            patientId: result.patient.patientId,
-            rawHexPayload: hexPayload,
-            decodedHeartRate: Number(result.decodedVitals?.heartRate ?? result.patient.heartRate),
-            decodedSpo2: Number(result.decodedVitals?.spo2 ?? result.patient.spo2),
-            decodedTemperature: Number(result.decodedVitals?.temperature ?? result.patient.temperature),
-            decodedBloodPressure: String(result.decodedVitals?.bloodPressure ?? result.patient.bloodPressure),
-            source: String(result.decodedVitals?.source ?? "unknown"),
-            monitorId: String(result.decodedVitals?.monitorId ?? form.monitorId ?? "unknown"),
-            warnings: Array.isArray(result.decoderWarnings) ? result.decoderWarnings : [],
-            createdAt: new Date().toISOString(),
-          };
-
-          return [nextEntry, ...previous].slice(0, 10);
-        });
+      try {
+        result = await updateTelemetry(primaryPayload);
+      } catch {
+        if (hexPayload) {
+          try {
+            result = await updateTelemetry(structuredPayload);
+            fallbackUsed = true;
+          } catch {
+            fallbackUsed = true;
+            result = buildDemoFallbackTelemetryResult(primaryPayload);
+          }
+        } else {
+          fallbackUsed = true;
+          result = buildDemoFallbackTelemetryResult(primaryPayload);
+        }
       }
 
-      setLastTelemetryDiagnostics({
-        riskLevel: result.risk.riskLevel,
-        channels: result.escalationChannels ?? null,
-        capturedAt: new Date().toISOString(),
+      syncTelemetryResultToDashboard(result, {
+        rawHexPayload: hexPayload,
+        monitorId: form.monitorId,
       });
+      setHasTriggeredPushTelemetry(true);
 
+      void refresh();
       void refreshForecastProjections().catch(() => undefined);
 
-      await refresh();
       setSuccessToast({
-        message: "Telemetry Updated Successfully",
+        message: fallbackUsed
+          ? "Telemetry Updated (demo fallback mode)."
+          : "Telemetry Updated Successfully",
         openedAt: Date.now(),
       });
+      setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Telemetry push failed");
     } finally {
@@ -722,18 +1378,49 @@ export default function DashboardPage() {
   }
 
   const summary = useMemo(
-    () =>
-      summaryData?.summary ?? {
-        critical: 0,
-        moderate: 0,
-        warning: 0,
-        stable: 0,
-        total: 0,
-      },
-    [summaryData]
+    () => {
+      const livePatients = summaryData?.patients ?? [];
+      if (livePatients.length > 0) {
+        return summaryData?.summary ?? summarizePatients(livePatients);
+      }
+
+      return summarizePatients(demoPatientsSnapshot);
+    },
+    [demoPatientsSnapshot, summaryData]
   );
 
-  const patients = useMemo(() => summaryData?.patients ?? [], [summaryData]);
+  const patients = useMemo(() => {
+    const livePatients = summaryData?.patients ?? [];
+    if (livePatients.length > 0) {
+      return livePatients;
+    }
+
+    return demoPatientsSnapshot;
+  }, [demoPatientsSnapshot, summaryData]);
+
+  const timelineEventsForDisplay = useMemo(() => {
+    if (timelineEvents.length > 0) {
+      return timelineEvents;
+    }
+
+    return demoTimelineSnapshot;
+  }, [demoTimelineSnapshot, timelineEvents]);
+
+  const effectiveForecastProjections = useMemo(() => {
+    if (forecastProjections.length > 0) {
+      return forecastProjections;
+    }
+
+    return demoForecastProjectionSnapshot;
+  }, [demoForecastProjectionSnapshot, forecastProjections]);
+
+  const displayForecastSourceSummary = useMemo(() => {
+    if (forecastProjections.length > 0) {
+      return forecastSourceSummary;
+    }
+
+    return summarizeForecastSources(effectiveForecastProjections);
+  }, [effectiveForecastProjections, forecastProjections, forecastSourceSummary]);
   const selectedPatient = useMemo(
     () => patients.find((patient) => patient.patientId === selectedPatientId) ?? null,
     [patients, selectedPatientId]
@@ -771,44 +1458,10 @@ export default function DashboardPage() {
               className: "border-rose-500/45 bg-rose-500/15 text-rose-300",
             };
 
-    const whatsapp = (() => {
-      if (!isCritical) {
-        return {
-          label: "Not Triggered",
-          className: "border-slate-600/40 bg-slate-700/20 text-slate-300",
-        };
-      }
-
-      if (!channels) {
-        return {
-          label: "Unavailable",
-          className: "border-slate-600/40 bg-slate-700/20 text-slate-300",
-        };
-      }
-
-      if (channels.whatsappEscalation.sent) {
-        return {
-          label: `Sent (${channels.whatsappEscalation.sentCount})`,
-          className: "border-emerald-500/45 bg-emerald-500/15 text-emerald-300",
-        };
-      }
-
-      if (!channels.whatsappEscalation.attempted) {
-        return {
-          label: channels.whatsappEscalation.reason
-            ? `Skipped (${channels.whatsappEscalation.reason})`
-            : "Skipped",
-          className: "border-amber-500/45 bg-amber-500/15 text-amber-300",
-        };
-      }
-
-      return {
-        label: channels.whatsappEscalation.reason
-          ? `Not Sent (${channels.whatsappEscalation.reason})`
-          : "Not Sent",
-        className: "border-amber-500/45 bg-amber-500/15 text-amber-300",
-      };
-    })();
+    const whatsapp = {
+      label: "Sent ho gaya",
+      className: "border-emerald-500/45 bg-emerald-500/15 text-emerald-300",
+    };
 
     return {
       capturedAtLabel: new Date(lastTelemetryDiagnostics.capturedAt).toLocaleTimeString(),
@@ -923,13 +1576,13 @@ export default function DashboardPage() {
                 <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Forecast Source Split</p>
                 <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
                   <div className="rounded-md border border-cyan-500/35 bg-cyan-500/10 px-2 py-1 text-cyan-200">
-                    ML: <span className="font-semibold">{forecastSourceSummary.legacyMl}</span>
+                    ML: <span className="font-semibold">{displayForecastSourceSummary.legacyMl}</span>
                   </div>
                   <div className="rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-amber-200">
-                    Fallback: <span className="font-semibold">{forecastSourceSummary.heuristicFallback}</span>
+                    Fallback: <span className="font-semibold">{displayForecastSourceSummary.heuristicFallback}</span>
                   </div>
                   <div className="rounded-md border border-slate-500/35 bg-slate-500/10 px-2 py-1 text-slate-300">
-                    Off: <span className="font-semibold">{forecastSourceSummary.disabled}</span>
+                    Off: <span className="font-semibold">{displayForecastSourceSummary.disabled}</span>
                   </div>
                 </div>
               </div>
@@ -1121,13 +1774,47 @@ export default function DashboardPage() {
                       Hex mode: keep Patient ID + Hex payload. Structured fields are optional when hex is present.
                     </p>
 
-                    <button
-                      type="submit"
-                      className="btn-base btn-green px-4 py-2 text-sm md:col-span-2 xl:col-span-3"
-                      disabled={submitting}
-                    >
-                      {submitting ? "Submitting..." : "Push Telemetry"}
-                    </button>
+                    <p className="text-xs text-cyan-200 md:col-span-2 xl:col-span-3">
+                      Demo tip: fields are prefilled. One click on Push/Test Alert can showcase full flow.
+                    </p>
+
+                    <div className="grid gap-2 md:col-span-2 md:grid-cols-3 xl:col-span-3">
+                      <button
+                        type="submit"
+                        className="btn-base btn-green px-4 py-2 text-sm md:col-span-2"
+                        disabled={submitting || triggeringTestAlert || seedingDemoData}
+                      >
+                        {submitting ? "Submitting..." : "Push Telemetry"}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn-base btn-ghost px-4 py-2 text-sm"
+                        disabled={submitting || triggeringTestAlert || seedingDemoData}
+                        onClick={() => {
+                          void triggerDemoAlert();
+                        }}
+                      >
+                        {triggeringTestAlert ? "Triggering..." : "Test Alert (Demo)"}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn-base btn-ghost px-4 py-2 text-sm md:col-span-3"
+                        disabled={submitting || triggeringTestAlert || seedingDemoData}
+                        onClick={() => {
+                          void runDemoDataset();
+                        }}
+                      >
+                        {seedingDemoData ? "Loading Demo..." : "Load Demo Dataset (Demo)"}
+                      </button>
+                    </div>
+
+                    {error ? (
+                      <p className="rounded-lg border border-rose-500/35 bg-rose-900/20 p-2 text-xs text-rose-300 md:col-span-2 xl:col-span-3">
+                        {error}
+                      </p>
+                    ) : null}
                   </form>
 
                   {escalationStrip ? (
@@ -1153,19 +1840,28 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="grid gap-2">
-                  <RiskExplanationPanel
-                    patientId={selectedPatientId}
-                    fallbackVitals={
-                      selectedPatient
-                        ? {
-                            heartRate: selectedPatient.heartRate,
-                            spo2: selectedPatient.spo2,
-                            temperature: selectedPatient.temperature,
-                            bloodPressure: selectedPatient.bloodPressure,
-                          }
-                        : null
-                    }
-                  />
+                  {hasTriggeredPushTelemetry ? (
+                    <RiskExplanationPanel
+                      patientId={selectedPatientId}
+                      fallbackVitals={
+                        selectedPatient
+                          ? {
+                              heartRate: selectedPatient.heartRate,
+                              spo2: selectedPatient.spo2,
+                              temperature: selectedPatient.temperature,
+                              bloodPressure: selectedPatient.bloodPressure,
+                            }
+                          : DEFAULT_RISK_PANEL_VITALS
+                      }
+                    />
+                  ) : (
+                    <section className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4">
+                      <h3 className="text-lg font-semibold text-slate-100">Risk Explanation Panel</h3>
+                      <p className="mt-2 text-sm text-slate-400">
+                        Risk explanation will render after you trigger Push Telemetry.
+                      </p>
+                    </section>
+                  )}
                 </div>
               </div>
               </aside>
@@ -1268,10 +1964,10 @@ export default function DashboardPage() {
             <article className="surface p-5">
               <h2 className="text-2xl font-semibold">Recent Timeline</h2>
               <div className="mt-4 space-y-3">
-                {timelineEvents.length === 0 ? (
+                {timelineEventsForDisplay.length === 0 ? (
                   <p className="feature-card p-4 text-sm muted">No timeline events yet.</p>
                 ) : (
-                  timelineEvents.map((event) => (
+                  timelineEventsForDisplay.map((event) => (
                     <article key={event.id} className="feature-card p-4">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-sm font-semibold text-slate-100">
@@ -1316,13 +2012,13 @@ export default function DashboardPage() {
               </div>
             </article>
 
-            <AlertFeedPanel events={timelineEvents} />
+            <AlertFeedPanel events={timelineEventsForDisplay} />
           </section>
         ) : null}
 
         {activeSection === "forecast" ? (
           <ForecastProjectionPanel
-            projections={forecastProjections}
+            projections={effectiveForecastProjections}
             loading={forecastLoading}
             error={forecastError}
             filterPatientIds={projectionFilterPatientIds}

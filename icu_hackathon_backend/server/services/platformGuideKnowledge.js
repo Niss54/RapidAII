@@ -1,5 +1,37 @@
+const { getVoiceKnowledgeContext } = require("./voiceKnowledgeService");
+const { listTrainedPatientProfiles } = require("./trainedPatientProfiles");
+
 const PLATFORM_GUIDE_QUERY_PATTERN =
-  /rapid\s*ai|rapidai|feature|features|how to use|kaise use|website|dashboard|api\s*doc|api\s*reference|endpoint|api key|x-api-key|developer|hospital|integration|hl7|serial|whatsapp|escalation|unique|uniqueness|market|difference|a2z|everything|demo|judge|overview/i;
+  /rapid\s*ai|rapidai|feature|features|how to use|kaise use|website|dashboard|api\s*doc|api\s*reference|endpoint|api key|x-api-key|developer|hospital|integration|hl7|serial|whatsapp|escalation|unique|uniqueness|market|difference|a2z|everything|demo|judge|overview|readme|presentation|short|long|detail|realtime|real-time|\bpid\b|patient data|kaise work|how it works|workflow/i;
+
+const LANGUAGE_FALLBACK_ALIAS = Object.freeze({
+  as: "bn",
+  ne: "hi",
+});
+
+const DYNAMIC_GUIDE_COPY = Object.freeze({
+  en: {
+    shortIntro: "Rapid AI is a real-time ICU copilot for risk detection and fast clinical response.",
+    realtimeSentence: "Rapid AI works in real time for telemetry, risk updates, alerts, and voice responses.",
+    featuresWorkflowPrefix: "How it works end-to-end: telemetry ingestion, decoder normalization, identity resolution, risk scoring, near-term forecast, voice/alert escalation, and timeline persistence.",
+    patientDemoPrefix: "Trained demo patient PIDs are",
+    patientDemoHowToAsk: "Ask: status of patient 901, 902, or 903 for detailed condition.",
+  },
+  hi: {
+    shortIntro: "Rapid AI एक रियल-टाइम ICU copilot है जो deterioration risk जल्दी पकड़ता है और तुरंत response देता है।",
+    realtimeSentence: "Rapid AI रियल-टाइम में काम करता है और telemetry, risk, alerts और voice response तुरंत अपडेट करता है।",
+    featuresWorkflowPrefix: "एंड-टू-एंड workflow: telemetry ingestion, decoder normalization, identity resolution, risk scoring, next-step forecast, voice/alert escalation, और timeline persistence.",
+    patientDemoPrefix: "ट्रेंड डेमो patient PID हैं",
+    patientDemoHowToAsk: "पूछें: status of patient 901, 902, या 903, तब पूरी condition detail मिलेगी।",
+  },
+  mr: {
+    shortIntro: "Rapid AI हे रिअल-टाइम ICU copilot आहे जे deterioration risk लवकर ओळखते आणि त्वरित response देते.",
+    realtimeSentence: "Rapid AI रिअल-टाइममध्ये काम करते आणि telemetry, risk, alerts आणि voice response सतत अपडेट करते.",
+    featuresWorkflowPrefix: "एंड-टू-एंड workflow: telemetry ingestion, decoder normalization, identity resolution, risk scoring, near-term forecast, voice/alert escalation आणि timeline persistence.",
+    patientDemoPrefix: "ट्रेंड डेमो patient PID आहेत",
+    patientDemoHowToAsk: "विचारा: status of patient 901, 902 किंवा 903, म्हणजे पूर्ण condition detail मिळेल.",
+  },
+});
 
 const README_ALIGNED_CONTEXT = Object.freeze({
   sourceOfTruth: {
@@ -233,7 +265,33 @@ function isPlatformGuideQuery(text) {
 function resolvePlatformGuideTopic(transcript) {
   const text = String(transcript || "").toLowerCase();
 
-  if (/everything|a2z|all\s+features|all\s+about|complete|full\s+overview|overview|saare/.test(text)) {
+  if (/patient\s*data|trained\s*patient|demo\s*patient|\bpid\b|patient\s*ids?/.test(text)) {
+    return "PATIENT_DEMO";
+  }
+
+  if (
+    /short|brief|one\s*line|chhota|chota|small/.test(text) &&
+    /intro|overview|rapid\s*ai|kya\s*hai|what\s*is/.test(text)
+  ) {
+    return "SHORT_INTRO";
+  }
+
+  if (
+    /long|detailed|detail|full|deep|lamba|expand/.test(text) &&
+    /intro|overview|rapid\s*ai|kya\s*hai|what\s*is/.test(text)
+  ) {
+    return "LONG_INTRO";
+  }
+
+  if (/feature|features|how\s*it\s*works|how\s*works|kaise\s*work|workflow|end\s*to\s*end/.test(text)) {
+    return "FEATURES_WORKFLOW";
+  }
+
+  if (/real[\s-]*time|live/.test(text) && /work|kaam|chalta|running|system/.test(text)) {
+    return "REALTIME";
+  }
+
+  if (/everything|a2z|all\s+features|all\s+about|complete|full\s+overview|overview|saare|readme|presentation/.test(text)) {
     return "OVERVIEW";
   }
 
@@ -266,20 +324,133 @@ function normalizeLanguageCode(language, normalizeLanguageFn) {
     if (PLATFORM_GUIDE_REPLIES[normalized]) {
       return normalized;
     }
+
+    const alias = LANGUAGE_FALLBACK_ALIAS[normalized];
+    if (alias && PLATFORM_GUIDE_REPLIES[alias]) {
+      return alias;
+    }
   }
 
   const fallback = String(language || "en").trim().toLowerCase();
-  return PLATFORM_GUIDE_REPLIES[fallback] ? fallback : "en";
+
+  if (PLATFORM_GUIDE_REPLIES[fallback]) {
+    return fallback;
+  }
+
+  const alias = LANGUAGE_FALLBACK_ALIAS[fallback];
+  if (alias && PLATFORM_GUIDE_REPLIES[alias]) {
+    return alias;
+  }
+
+  return "en";
 }
 
-function buildPlatformGuideContext() {
-  return README_ALIGNED_CONTEXT;
+function getDynamicCopy(languageCode) {
+  return DYNAMIC_GUIDE_COPY[languageCode] || DYNAMIC_GUIDE_COPY.en;
 }
 
-function buildPlatformGuideReply({ transcript, language, normalizeLanguageFn } = {}) {
+function firstSentence(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const match = normalized.match(/^(.+?[.!?])(\s|$)/);
+  return match ? match[1].trim() : normalized;
+}
+
+function buildDemoPatientContext() {
+  const profiles = listTrainedPatientProfiles().map((profile) => ({
+    patientId: profile.patientId,
+    patientName: profile.patientName,
+    diagnosis: profile.diagnosis,
+    riskLevel: profile.riskLevel,
+  }));
+
+  return {
+    patientCount: profiles.length,
+    patientIds: profiles.map((profile) => profile.patientId),
+    patients: profiles,
+  };
+}
+
+function buildPatientSnapshot(summary, patients, maxPatients = 8) {
+  if (!summary || !Array.isArray(patients)) {
+    return null;
+  }
+
+  const clipped = patients.slice(0, maxPatients).map((patient) => ({
+    patientId: patient?.patientId ? String(patient.patientId) : null,
+    riskLevel: patient?.riskLevel ? String(patient.riskLevel) : null,
+    heartRate: Number(patient?.heartRate),
+    spo2: Number(patient?.spo2),
+    temperature: Number(patient?.temperature),
+    bloodPressure: patient?.bloodPressure ? String(patient.bloodPressure) : null,
+    diagnosis: patient?.diagnosis ? String(patient.diagnosis) : null,
+    respiratoryRate: Number(patient?.respiratoryRate),
+    lastUpdated: patient?.lastUpdated ? String(patient.lastUpdated) : null,
+  }));
+
+  return {
+    summary,
+    totalPatientsIncluded: clipped.length,
+    patients: clipped,
+  };
+}
+
+function buildPlatformGuideContext({ transcript, summary, patients } = {}) {
   const topic = resolvePlatformGuideTopic(transcript);
+  const knowledge = getVoiceKnowledgeContext(transcript, { maxSnippets: 6 });
+
+  return {
+    ...README_ALIGNED_CONTEXT,
+    topic,
+    knowledgeBase: {
+      builtAt: knowledge.builtAt,
+      sourceCount: knowledge.sourceCount,
+      trainingSources: knowledge.trainingSources,
+      snippets: knowledge.snippets,
+      featureCatalog: knowledge.featureCatalog,
+    },
+    patientSnapshot: buildPatientSnapshot(summary, patients),
+    demoPatients: buildDemoPatientContext(),
+  };
+}
+
+function buildPlatformGuideReply({ transcript, language, normalizeLanguageFn, context } = {}) {
+  const effectiveContext = context || buildPlatformGuideContext({ transcript });
+  const topic = effectiveContext.topic || resolvePlatformGuideTopic(transcript);
   const languageCode = normalizeLanguageCode(language, normalizeLanguageFn);
   const languagePack = PLATFORM_GUIDE_REPLIES[languageCode] || PLATFORM_GUIDE_REPLIES.en;
+  const dynamicCopy = getDynamicCopy(languageCode);
+
+  if (topic === "SHORT_INTRO") {
+    const shortIntro = dynamicCopy.shortIntro || firstSentence(languagePack.OVERVIEW);
+    return `${shortIntro} ${dynamicCopy.realtimeSentence}`.trim();
+  }
+
+  if (topic === "LONG_INTRO") {
+    return `${languagePack.OVERVIEW} ${dynamicCopy.realtimeSentence} ${languagePack.HOSPITAL} ${languagePack.UNIQUENESS}`.trim();
+  }
+
+  if (topic === "FEATURES_WORKFLOW") {
+    const coreFeatures = Array.isArray(README_ALIGNED_CONTEXT.coreFeatures)
+      ? README_ALIGNED_CONTEXT.coreFeatures.slice(0, 5).join(", ")
+      : "";
+    return `${dynamicCopy.featuresWorkflowPrefix} Key features include ${coreFeatures}. ${dynamicCopy.realtimeSentence}`.trim();
+  }
+
+  if (topic === "REALTIME") {
+    return `${dynamicCopy.realtimeSentence} ${languagePack.HOSPITAL}`.trim();
+  }
+
+  if (topic === "PATIENT_DEMO") {
+    const patientIds = Array.isArray(effectiveContext?.demoPatients?.patientIds)
+      ? effectiveContext.demoPatients.patientIds
+      : [];
+    const idsText = patientIds.length > 0 ? patientIds.join(", ") : "901, 902, 903";
+    return `${dynamicCopy.patientDemoPrefix} ${idsText}. ${dynamicCopy.patientDemoHowToAsk}`.trim();
+  }
 
   return languagePack[topic] || languagePack.OVERVIEW || PLATFORM_GUIDE_REPLIES.en.OVERVIEW;
 }

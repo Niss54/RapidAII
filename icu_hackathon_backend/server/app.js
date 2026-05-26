@@ -1,8 +1,6 @@
-
 require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 
 const express = require("express");
-const app = express();
 const cors = require("cors");
 const { initializeForecastService, getForecastServiceStatus } = require("./services/forecastService");
 const hl7IngestionService = require("./services/hl7IngestionService");
@@ -18,13 +16,6 @@ const integrationRoutes = require("./routes/integration");
 const apiKeyRoutes = require("./routes/apiKey");
 const billingRoutes = require("./routes/billing");
 const whatsappWebhookRoutes = require("./routes/whatsappWebhook");
-// Root health-check endpoint for Render
-app.get("/", (_req, res) => {
-  res.status(200).json({
-    status: "ok",
-    service: "rapidai-server"
-  });
-});
 
 function hasPlaceholderValue(value) {
   return /^your[_-]/i.test(String(value || "").trim());
@@ -35,7 +26,7 @@ function isWhatsAppWebhookActive() {
   return Boolean(verifyToken) && !hasPlaceholderValue(verifyToken);
 }
 
-
+const app = express();
 
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
@@ -55,10 +46,7 @@ const whatsappWebhookActive = isWhatsAppWebhookActive();
 if (whatsappWebhookActive) {
   app.use("/whatsapp", whatsappWebhookRoutes);
 }
-// Public health-check endpoint for Render
-app.get("/integration/status", (_req, res) => {
-  res.json({ status: "ok" });
-});
+
 app.use(apiKeyAuthMiddleware);
 
 app.use("/telemetry", telemetryRoutes);
@@ -70,38 +58,18 @@ app.use("/integration", integrationRoutes);
 const port = Number(process.env.SERVER_PORT || 4000);
 
 async function start() {
-  // const forecastStatus = await initializeForecastService();
-  // console.log(`Forecast mode: ${forecastStatus.source} (${forecastStatus.message})`);
-
-  if (process.env.ENABLE_FORECAST === "true") {
-    const forecastStatus = await initializeForecastService();
-    console.log(`Forecast mode: ${forecastStatus.source} (${forecastStatus.message})`);
-  } else {
-    console.log("Forecast service disabled in production environment");
-  }
+  const forecastStatus = await initializeForecastService();
+  console.log(`Forecast mode: ${forecastStatus.source} (${forecastStatus.message})`);
 
   const hl7Status = hl7IngestionService.startHl7IngestionService();
   console.log(
     `HL7 ingestion active on TCP ${hl7Status.port} -> ${hl7Status.forwardUrl}`
   );
 
-  if (process.env.ENABLE_SERIAL === "true") {
-    // const serialStatus = serialBridge.startSerialBridge();
-    // console.log(
-    //   `Serial bridge active on ${serialStatus.port} @ ${serialStatus.baudRate} -> ${serialStatus.forwardUrl}`
-    // );
-
-    if (process.env.ENABLE_SERIAL === "true") {
-      const serialStatus = serialBridge.startSerialBridge();
-      console.log(
-        `Serial bridge active on ${serialStatus.port} @ ${serialStatus.baudRate} -> ${serialStatus.forwardUrl}`
-      );
-    } else {
-      console.log("Serial bridge disabled in production environment");
-    }
-  } else {
-    console.log("Serial bridge disabled in production environment");
-  }
+  const serialStatus = serialBridge.startSerialBridge();
+  console.log(
+    `Serial bridge active on ${serialStatus.port} @ ${serialStatus.baudRate} -> ${serialStatus.forwardUrl}`
+  );
 
   console.log(
     whatsappWebhookActive
@@ -116,9 +84,8 @@ async function start() {
       : `WhatsApp escalation integration inactive (${whatsappStatus.reason || "credentials-missing"})`
   );
 
-  const PORT = process.env.PORT || process.env.SERVER_PORT || 4000;
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+  app.listen(port, () => {
+    console.log(`ICU voice server running on http://localhost:${port}`);
   });
 }
 

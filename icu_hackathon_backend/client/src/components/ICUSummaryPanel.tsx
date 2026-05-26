@@ -15,6 +15,13 @@ type SummarySlice = {
 };
 
 const AUTO_REFRESH_MS = 5000;
+const DEMO_SUMMARY: IcuSummaryResponse["summary"] = {
+  critical: 1,
+  moderate: 1,
+  warning: 1,
+  stable: 1,
+  total: 4,
+};
 
 function toSafeNumber(value: unknown): number {
   const parsed = Number(value);
@@ -70,16 +77,11 @@ function labelRenderer(entry: { percent?: number }): string {
 }
 
 export default function ICUSummaryPanel() {
-  const [summary, setSummary] = useState<IcuSummaryResponse["summary"]>({
-    critical: 0,
-    moderate: 0,
-    warning: 0,
-    stable: 0,
-    total: 0,
-  });
-  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState<IcuSummaryResponse["summary"]>(DEMO_SUMMARY);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("Demo summary preloaded.");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
   const refreshSummary = useCallback(async (showLoadingState: boolean) => {
@@ -91,11 +93,21 @@ export default function ICUSummaryPanel() {
 
     try {
       const response = await fetchIcuSummary();
-      setSummary(response.summary);
+      const nextSummary = response.summary;
+      if (toSafeNumber(nextSummary.total) === 0) {
+        setSummary(DEMO_SUMMARY);
+        setNotice("Live ICU summary is empty. Showing demo distribution.");
+      } else {
+        setSummary(nextSummary);
+        setNotice("");
+      }
       setError("");
       setLastSyncedAt(new Date().toISOString());
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not load ICU summary");
+      const message = requestError instanceof Error ? requestError.message : "Could not load ICU summary";
+      setSummary(DEMO_SUMMARY);
+      setNotice(`ICU summary API unavailable (${message}). Showing demo distribution.`);
+      setError("");
     } finally {
       if (showLoadingState) {
         setLoading(false);
@@ -117,7 +129,7 @@ export default function ICUSummaryPanel() {
       await refreshSummary(showLoadingState);
     };
 
-    void run(true);
+    void run(false);
     intervalId = setInterval(() => {
       void run(false);
     }, AUTO_REFRESH_MS);
@@ -158,6 +170,7 @@ export default function ICUSummaryPanel() {
       </p>
 
       {error ? <p className="mt-3 rounded-lg border border-rose-500/35 bg-rose-900/20 p-3 text-sm text-rose-300">{error}</p> : null}
+      {notice ? <p className="mt-3 rounded-lg border border-cyan-500/35 bg-cyan-500/12 p-3 text-xs text-cyan-200">{notice}</p> : null}
 
       <div className="mt-4 grid gap-4 lg:grid-cols-[0.42fr_0.58fr]">
         <article className="rounded-xl border border-white/10 bg-black/20 p-4">

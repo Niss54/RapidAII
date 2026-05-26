@@ -9,8 +9,8 @@ import {
   BillingPlan,
   BillingPlanCode,
   clearRuntimeApiKey,
-  confirmBillingPayment,
-  createBillingCheckout,
+  confirmDemoBillingPayment,
+  createDemoBillingCheckout,
   fetchBillingPlans,
   fetchMyApiKey,
   setRuntimeApiKey,
@@ -24,9 +24,8 @@ const FALLBACK_PLANS: BillingPlan[] = [
     code: "premium_monthly",
     name: "Premium Monthly",
     billing_cycle: "monthly",
-    amount: 499,
+    amount_usd: 5,
     amount_display: "$5",
-    currency: "INR",
     usage_limit: 25000,
     highlights: [
       "25,000 API requests per day",
@@ -38,9 +37,8 @@ const FALLBACK_PLANS: BillingPlan[] = [
     code: "premium_yearly",
     name: "Premium Yearly",
     billing_cycle: "yearly",
-    amount: 4999,
+    amount_usd: 60,
     amount_display: "$60",
-    currency: "INR",
     usage_limit: 25000,
     highlights: [
       "25,000 API requests per day",
@@ -234,7 +232,7 @@ export default function PremiumApiPlansPage() {
     setCreatingCheckout(true);
 
     try {
-      const checkout = await createBillingCheckout({
+      const checkout = await createDemoBillingCheckout({
         userId: normalized,
         planCode: selectedPlanCode,
         gateway: "razorpay_test",
@@ -269,12 +267,12 @@ export default function PremiumApiPlansPage() {
     setConfirmingPayment(true);
 
     try {
-      const fakePaymentId = `pay_test_${Date.now()}`;
-      const result = await confirmBillingPayment({
+      const demoPaymentId = `pay_test_${Date.now()}`;
+      const result = await confirmDemoBillingPayment({
         userId: normalized,
         planCode: checkoutState.planCode,
         orderId: checkoutState.orderId,
-        razorpayPaymentId: fakePaymentId,
+        razorpayPaymentId: demoPaymentId,
         gateway: "razorpay_test",
       });
 

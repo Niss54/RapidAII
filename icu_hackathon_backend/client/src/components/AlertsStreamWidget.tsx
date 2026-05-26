@@ -18,6 +18,8 @@ type AlertStreamItem = {
 
 const AUTO_REFRESH_MS = 3000;
 const NEW_ANIMATION_MS = 850;
+const CRITICAL_ALERT_SOUND_SRC = "/assets/alert.mp3";
+const CRITICAL_ALERT_SOUND_MAX_PLAY_MS = 6000;
 
 function normalizeSeverity(value: unknown): AlertSeverity {
   const normalized = String(value || "").trim().toLowerCase();
@@ -103,7 +105,7 @@ function toDuplicateSuppressed(record: AnalyticsAlertRecord, cooldownRemainingSe
 }
 
 function toAlertItems(records: AnalyticsAlertRecord[]): AlertStreamItem[] {
-  const mapped = records.map((record, index) => {
+  const mapped = records.map((record) => {
     const severity = normalizeSeverity(record.severity);
     const patientId = String(record.patient_id || "unknown").trim() || "unknown";
     const triggerRule = toTriggerRule(record);
@@ -111,7 +113,7 @@ function toAlertItems(records: AnalyticsAlertRecord[]): AlertStreamItem[] {
     const timestampLabel = timestampMs > 0 ? new Date(timestampMs).toLocaleTimeString() : "-";
     const cooldownRemainingSeconds = toCooldownRemainingSeconds(record);
     const duplicateSuppressed = toDuplicateSuppressed(record, cooldownRemainingSeconds);
-    const id = `${patientId}-${timestampMs}-${triggerRule}-${severity}-${index}`;
+    const id = `${patientId}-${timestampMs}-${triggerRule}-${severity}`;
 
     return {
       id,
@@ -129,16 +131,52 @@ function toAlertItems(records: AnalyticsAlertRecord[]): AlertStreamItem[] {
   return mapped;
 }
 
+function buildDemoAlertItems(): AlertStreamItem[] {
+  const now = Date.now();
+  return [
+    {
+      id: "demo-stream-critical-1",
+      severity: "critical",
+      patientId: "demo-alert-911",
+      triggerRule: "Demo test alert: severe oxygen desaturation",
+      timestampMs: now - 25 * 1000,
+      timestampLabel: new Date(now - 25 * 1000).toLocaleTimeString(),
+      duplicateSuppressed: false,
+      cooldownRemainingSeconds: 0,
+    },
+    {
+      id: "demo-stream-warning-1",
+      severity: "warning",
+      patientId: "204",
+      triggerRule: "HR and temperature drift warning",
+      timestampMs: now - 70 * 1000,
+      timestampLabel: new Date(now - 70 * 1000).toLocaleTimeString(),
+      duplicateSuppressed: true,
+      cooldownRemainingSeconds: 14,
+    },
+    {
+      id: "demo-stream-stable-1",
+      severity: "stable",
+      patientId: "412",
+      triggerRule: "Vitals normalized after intervention",
+      timestampMs: now - 3 * 60 * 1000,
+      timestampLabel: new Date(now - 3 * 60 * 1000).toLocaleTimeString(),
+      duplicateSuppressed: false,
+      cooldownRemainingSeconds: 0,
+    },
+  ];
+}
+
 function severityIcon(severity: AlertSeverity): string {
   if (severity === "critical") {
-    return "▲";
+    return "!";
   }
 
   if (severity === "warning") {
-    return "●";
+    return "*";
   }
 
-  return "■";
+  return "-";
 }
 
 function severityClass(severity: AlertSeverity): string {
@@ -154,14 +192,63 @@ function severityClass(severity: AlertSeverity): string {
 }
 
 export default function AlertsStreamWidget() {
-  const [items, setItems] = useState<AlertStreamItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<AlertStreamItem[]>(() => buildDemoAlertItems());
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("Demo alert stream preloaded.");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [newItemIds, setNewItemIds] = useState<Set<string>>(new Set());
 
   const knownIdsRef = useRef<Set<string>>(new Set());
+  const hasInitializedAlertIdsRef = useRef(false);
+  const playedCriticalIdsRef = useRef<Set<string>>(new Set());
+  const alertAudioRef = useRef<HTMLAudioElement | null>(null);
+  const stopAudioTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopCriticalAlertSound = useCallback(() => {
+    if (stopAudioTimerRef.current) {
+      clearTimeout(stopAudioTimerRef.current);
+      stopAudioTimerRef.current = null;
+    }
+
+    const audio = alertAudioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    audio.pause();
+    audio.currentTime = 0;
+  }, []);
+
+  const triggerCriticalAlertSound = useCallback(
+    (alertId: string) => {
+      const normalizedAlertId = String(alertId || "").trim();
+      if (!normalizedAlertId || playedCriticalIdsRef.current.has(normalizedAlertId)) {
+        return;
+      }
+
+      playedCriticalIdsRef.current.add(normalizedAlertId);
+
+      if (!alertAudioRef.current) {
+        const nextAudio = new Audio(CRITICAL_ALERT_SOUND_SRC);
+        nextAudio.loop = false;
+        alertAudioRef.current = nextAudio;
+      }
+
+      const audio = alertAudioRef.current;
+      audio.loop = false;
+
+      stopCriticalAlertSound();
+      console.log("Critical alert sound triggered");
+      void audio.play().catch(() => undefined);
+
+      stopAudioTimerRef.current = setTimeout(() => {
+        stopCriticalAlertSound();
+      }, CRITICAL_ALERT_SOUND_MAX_PLAY_MS);
+    },
+    [stopCriticalAlertSound]
+  );
 
   const refreshStream = useCallback(async (showLoadingState: boolean) => {
     if (showLoadingState) {
@@ -174,10 +261,31 @@ export default function AlertsStreamWidget() {
       const response = await fetchAnalyticsAlerts({ limit: 80 });
       const records = Array.isArray(response.alerts) ? response.alerts : [];
       const nextItems = toAlertItems(records);
+      if (nextItems.length === 0) {
+        const demoItems = buildDemoAlertItems();
+        knownIdsRef.current = new Set(demoItems.map((item) => item.id));
+        setItems(demoItems);
+        setNotice("Live alert stream is empty. Showing demo stream items.");
+        setError("");
+        setLastSyncedAt(new Date().toISOString());
+        return;
+      }
 
       const incomingNewIds = nextItems
         .map((item) => item.id)
         .filter((id) => !knownIdsRef.current.has(id));
+
+      if (hasInitializedAlertIdsRef.current) {
+        const criticalIncomingIds = nextItems
+          .filter(
+            (item) => item.severity === "critical" && incomingNewIds.includes(item.id)
+          )
+          .map((item) => item.id);
+
+        for (const criticalAlertId of criticalIncomingIds) {
+          triggerCriticalAlertSound(criticalAlertId);
+        }
+      }
 
       if (incomingNewIds.length > 0) {
         setNewItemIds(new Set(incomingNewIds));
@@ -193,11 +301,18 @@ export default function AlertsStreamWidget() {
       }
 
       knownIdsRef.current = new Set(nextItems.map((item) => item.id));
+      hasInitializedAlertIdsRef.current = true;
       setItems(nextItems);
       setError("");
+      setNotice("");
       setLastSyncedAt(new Date().toISOString());
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not load alert stream");
+      const message = requestError instanceof Error ? requestError.message : "Could not load alert stream";
+      const demoItems = buildDemoAlertItems();
+      knownIdsRef.current = new Set(demoItems.map((item) => item.id));
+      setItems(demoItems);
+      setNotice(`Alerts API unavailable (${message}). Showing demo stream items.`);
+      setError("");
     } finally {
       if (showLoadingState) {
         setLoading(false);
@@ -205,7 +320,7 @@ export default function AlertsStreamWidget() {
         setRefreshing(false);
       }
     }
-  }, []);
+  }, [triggerCriticalAlertSound]);
 
   useEffect(() => {
     let active = true;
@@ -219,7 +334,7 @@ export default function AlertsStreamWidget() {
       await refreshStream(showLoadingState);
     };
 
-    void run(true);
+    void run(false);
     intervalId = setInterval(() => {
       void run(false);
     }, AUTO_REFRESH_MS);
@@ -229,8 +344,10 @@ export default function AlertsStreamWidget() {
       if (intervalId) {
         clearInterval(intervalId);
       }
+
+      stopCriticalAlertSound();
     };
-  }, [refreshStream]);
+  }, [refreshStream, stopCriticalAlertSound]);
 
   const hasAlerts = useMemo(() => items.length > 0, [items]);
 
@@ -260,6 +377,7 @@ export default function AlertsStreamWidget() {
       </p>
 
       {error ? <p className="mt-3 rounded-lg border border-rose-500/35 bg-rose-900/20 p-3 text-sm text-rose-300">{error}</p> : null}
+      {notice ? <p className="mt-3 rounded-lg border border-cyan-500/35 bg-cyan-500/12 p-3 text-xs text-cyan-200">{notice}</p> : null}
 
       <div className="mt-4 max-h-[300px] overflow-y-auto rounded-xl border border-white/10 bg-black/20 p-3">
         {loading ? (
@@ -321,3 +439,4 @@ export default function AlertsStreamWidget() {
     </section>
   );
 }
+

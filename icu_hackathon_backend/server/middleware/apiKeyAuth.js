@@ -13,6 +13,20 @@ class ApiKeyAuthError extends Error {
   }
 }
 
+function resolveLocalDevApiKey() {
+  const configured = String(process.env.API_KEY || "").trim();
+  if (!configured || /^your[_-]/i.test(configured)) {
+    return "";
+  }
+
+  return configured;
+}
+
+function resolveLocalDevUserId() {
+  const configured = String(process.env.LOCAL_API_USER_ID || "").trim();
+  return configured || "local-dev-user";
+}
+
 function getHeaderApiKey(req) {
   const raw = req?.headers?.["x-api-key"];
   if (Array.isArray(raw)) {
@@ -70,6 +84,22 @@ async function validateApiKey(req) {
     throw new ApiKeyAuthError("Missing x-api-key header", 401);
   }
 
+  const localDevApiKey = resolveLocalDevApiKey();
+  if (localDevApiKey && providedApiKey === localDevApiKey) {
+    const authContext = {
+      api_key: "__local_dev_key__",
+      user_id: resolveLocalDevUserId(),
+      api_key_id: "local-dev",
+      plan_type: "local-dev",
+      usage_limit: Number.MAX_SAFE_INTEGER,
+      skipUsageTracking: true,
+    };
+
+    req.authContext = authContext;
+    req.user_id = authContext.user_id;
+    return authContext;
+  }
+
   const apiKeyRecord = await findApiKeyByRawValue(providedApiKey);
   if (!apiKeyRecord) {
     throw new ApiKeyAuthError("Invalid API key", 401);
@@ -109,6 +139,14 @@ async function apiKeyAuthMiddleware(req, res, next) {
 
   try {
     const authContext = await validateApiKey(req);
+    if (authContext.skipUsageTracking) {
+      req.authContext = {
+        ...authContext,
+        daily_usage_count: null,
+      };
+      return next();
+    }
+
     const endpoint = String(req?.path || req?.originalUrl || "/");
     const requestTimestamp = new Date();
     const currentDailyUsage = await enforceDailyUsageLimitAndTrack(authContext, endpoint, requestTimestamp);

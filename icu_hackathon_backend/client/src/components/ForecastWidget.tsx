@@ -21,6 +21,8 @@ type ForecastViewModel = {
   trend: TrendDirection;
 };
 
+const AUTO_REFRESH_MS = 7000;
+
 function parseBloodPressure(value: string): { sbp: number; dbp: number; map: number } {
   const match = String(value || "").trim().match(/^(\d{2,3})\s*\/\s*(\d{2,3})$/);
   if (!match) {
@@ -123,6 +125,34 @@ function toStatusBadgeClass(category: "CRITICAL" | "WARNING" | "STABLE"): string
   return "border-emerald-500/45 bg-emerald-500/15 text-emerald-300";
 }
 
+function scoreToCategory(score: number): "CRITICAL" | "WARNING" | "STABLE" {
+  if (score >= 75) {
+    return "CRITICAL";
+  }
+
+  if (score >= 40) {
+    return "WARNING";
+  }
+
+  return "STABLE";
+}
+
+function buildDemoForecast(currentRiskScore: number): ForecastViewModel {
+  const base = clampScore(currentRiskScore);
+  const pulse = Math.floor(Date.now() / AUTO_REFRESH_MS) % 3;
+  const adjustment = pulse === 0 ? 4 : pulse === 1 ? 8 : 6;
+  const predictedRisk = clampScore(base + adjustment);
+  const predictedCategory = scoreToCategory(predictedRisk);
+  const confidencePercent = Math.max(64, Math.min(95, 72 + adjustment));
+
+  return {
+    predictedRiskText: `${predictedRisk}/100`,
+    confidencePercent,
+    predictedCategory,
+    trend: resolveTrend(base, predictedRisk),
+  };
+}
+
 function toViewModel(response: ForecastNextResponse, currentRiskScore: number): ForecastViewModel {
   const predictedCategory = statusToCategory(response.status);
   const predictedRiskScore = categoryToScore(predictedCategory);
@@ -147,6 +177,8 @@ export default function ForecastWidget({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [offline, setOffline] = useState(false);
+  const [notice, setNotice] = useState("Demo-ready: auto-refresh every 7 seconds.");
+  const [lastForecastAt, setLastForecastAt] = useState<string | null>(null);
 
   const fallbackVitalsPayload = useMemo(() => {
     const { sbp, dbp, map } = parseBloodPressure(bloodPressure);
@@ -189,10 +221,14 @@ export default function ForecastWidget({
       }
 
       setData(toViewModel(response, clampScore(currentRiskScore)));
+      setNotice("");
+      setLastForecastAt(new Date().toISOString());
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : "Forecast request failed";
-      setError(message);
-      setData(null);
+      setError("");
+      setData(buildDemoForecast(currentRiskScore));
+      setNotice(`Forecast API unavailable (${message}). Showing demo prediction model.`);
+      setLastForecastAt(new Date().toISOString());
 
       const normalized = message.toLowerCase();
       setOffline(
@@ -207,6 +243,13 @@ export default function ForecastWidget({
 
   useEffect(() => {
     void loadForecast();
+    const timer = setInterval(() => {
+      void loadForecast();
+    }, AUTO_REFRESH_MS);
+
+    return () => {
+      clearInterval(timer);
+    };
   }, [loadForecast]);
 
   return (
@@ -243,6 +286,12 @@ export default function ForecastWidget({
 
       {error && !offline ? (
         <p className="mt-2 rounded-md border border-rose-500/35 bg-rose-900/20 px-2.5 py-2 text-xs text-rose-300">{error}</p>
+      ) : null}
+      {notice ? (
+        <p className="mt-2 rounded-md border border-cyan-500/35 bg-cyan-500/12 px-2.5 py-2 text-xs text-cyan-200">{notice}</p>
+      ) : null}
+      {lastForecastAt ? (
+        <p className="mt-2 text-[11px] text-slate-500">Last forecast: {new Date(lastForecastAt).toLocaleTimeString()}</p>
       ) : null}
 
       {data ? (

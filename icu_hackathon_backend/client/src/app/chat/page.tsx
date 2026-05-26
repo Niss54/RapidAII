@@ -1094,6 +1094,25 @@ export default function ChatPage() {
         meta: "voice call",
         createdAt: nowIso(),
       });
+
+      if (reasonText === uiCopy.voiceCallEnded) {
+        void (async () => {
+          try {
+            const result = await queryVoice({
+              text: reasonText,
+              language: mapUiLanguageToBackendLanguage(languageRef.current),
+              userId: activeSessionId,
+            });
+
+            if (result.transcript && result.transcript.trim().length > 0) {
+              appendMessage(transcriptMessage(result.transcript.trim()));
+            }
+            appendMessage(assistantMessageFromResponse(result));
+          } catch {
+            // Ignore backend notification failures here.
+          }
+        })();
+      }
     }
 
     consecutiveCallErrorsRef.current = 0;

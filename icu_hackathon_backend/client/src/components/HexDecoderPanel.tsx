@@ -21,6 +21,11 @@ type FallbackJsonVitals = {
   bloodPressure: string | null;
 };
 
+const DEMO_HEX_PAYLOAD_PRIMARY =
+  "7B22686561727452617465223A3132382C2273706F32223A38362C2274656D7065726174757265223A3130322E322C22626C6F6F645072657373757265223A2238342F3532227D";
+const DEMO_HEX_PAYLOAD_SECONDARY =
+  "7B22686561727452617465223A39362C2273706F32223A39372C2274656D7065726174757265223A39382E362C22626C6F6F645072657373757265223A223132302F3738227D";
+
 function normalizeHexInput(value: string): string {
   return String(value || "").replace(/\s+/g, "").trim();
 }
@@ -119,6 +124,17 @@ function decodeJsonVitalsFromHex(rawHex: string): FallbackJsonVitals | null {
   }
 }
 
+function toDecodedFieldsFromJsonFallback(vitals: FallbackJsonVitals): DecodedTelemetryFields {
+  return {
+    heartRate: vitals.heartRate === null ? "--" : `${Math.round(vitals.heartRate)} bpm`,
+    spo2: vitals.spo2 === null ? "--" : `${Math.round(vitals.spo2)}%`,
+    temperature: vitals.temperature === null ? "--" : `${vitals.temperature.toFixed(1)} deg`,
+    bloodPressure: vitals.bloodPressure || "--",
+    packetIntegrityStatus: "Valid",
+    reconstructionStatus: "Decoded",
+  };
+}
+
 function toStatusChipClass(status: DecoderStatus): string {
   if (status === "decoded") {
     return "border-emerald-500/40 bg-emerald-500/15 text-emerald-300";
@@ -211,7 +227,7 @@ function resolveDecodedResponse(response: TelemetryIngestResponse, rawHexPayload
 }
 
 export default function HexDecoderPanel() {
-  const [hexPayload, setHexPayload] = useState("");
+  const [hexPayload, setHexPayload] = useState(DEMO_HEX_PAYLOAD_PRIMARY);
   const [output, setOutput] = useState<DecodedTelemetryFields | null>(null);
   const [status, setStatus] = useState<DecoderStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -245,9 +261,16 @@ export default function HexDecoderPanel() {
         setError("Decoder could not reconstruct vitals from this packet.");
       }
     } catch (requestError) {
-      setOutput(null);
-      setStatus("failed");
-      setError(requestError instanceof Error ? requestError.message : "Decode request failed");
+      const fallbackJsonVitals = decodeJsonVitalsFromHex(normalizedHex);
+      if (fallbackJsonVitals) {
+        setOutput(toDecodedFieldsFromJsonFallback(fallbackJsonVitals));
+        setStatus("decoded");
+        setError("Live decoder unavailable. Showing local demo decode from payload.");
+      } else {
+        setOutput(null);
+        setStatus("failed");
+        setError(requestError instanceof Error ? requestError.message : "Decode request failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -284,6 +307,34 @@ export default function HexDecoderPanel() {
           <label htmlFor="hex-decoder-payload" className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
             Paste Hex Payload
           </label>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-base btn-ghost px-3 py-1 text-[11px]"
+              onClick={() => {
+                setHexPayload(DEMO_HEX_PAYLOAD_PRIMARY);
+                setOutput(null);
+                setStatus(null);
+                setError("");
+                setInvalidHex(false);
+              }}
+            >
+              Load Sample A
+            </button>
+            <button
+              type="button"
+              className="btn-base btn-ghost px-3 py-1 text-[11px]"
+              onClick={() => {
+                setHexPayload(DEMO_HEX_PAYLOAD_SECONDARY);
+                setOutput(null);
+                setStatus(null);
+                setError("");
+                setInvalidHex(false);
+              }}
+            >
+              Load Sample B
+            </button>
+          </div>
           <textarea
             id="hex-decoder-payload"
             className="input-dark mt-2 min-h-36 w-full rounded-xl px-3 py-2 font-mono text-sm"
@@ -297,6 +348,9 @@ export default function HexDecoderPanel() {
               setInvalidHex(false);
             }}
           />
+          <p className="mt-2 text-[11px] text-cyan-200">
+            Demo payload is preloaded. Click Decode for one-click walkthrough.
+          </p>
 
           {invalidHex ? (
             <span className="mt-3 inline-flex rounded-full border border-rose-500/40 bg-rose-500/15 px-3 py-1 text-xs font-semibold text-rose-300">

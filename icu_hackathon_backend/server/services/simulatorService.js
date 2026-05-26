@@ -29,6 +29,11 @@ function setSimulatorApiKey(value) {
   simulatorApiKey = normalized;
 }
 
+function syncSimulatorApiKey(value) {
+  setSimulatorApiKey(value);
+  return getSimulationStatus();
+}
+
 function parseIntervalMs() {
   const raw = Number(process.env.SIMULATOR_INTERVAL_MS || DEFAULT_INTERVAL_MS);
   if (!Number.isFinite(raw)) {
@@ -162,4 +167,5 @@ module.exports = {
   getSimulationStatus,
   startSimulation,
   stopSimulation,
+  syncSimulatorApiKey,
 };

@@ -117,7 +117,9 @@ router.post("/update", async (req, res) => {
 
     let alert = null;
     let escalationChannels = null;
-    if (risk.riskLevel === "CRITICAL") {
+    const isDashboardTelemetry = String(telemetry.sourceHint || "").trim().toLowerCase() === "dashboard";
+
+    if (risk.riskLevel === "CRITICAL" && !isDashboardTelemetry) {
       const escalation = await dispatchCriticalEscalation({
         alertEvent: {
           patientId,

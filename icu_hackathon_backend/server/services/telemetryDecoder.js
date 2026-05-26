@@ -28,6 +28,11 @@ function toRoundedNumber(value, digits = 0) {
   return Number(numeric.toFixed(digits));
 }
 
+function hasDecodedVitalValue(value) {
+  const numeric = toFiniteNumber(value);
+  return numeric !== null && numeric > 0;
+}
+
 function normalizeBloodPressure(rawValue) {
   const raw = String(rawValue || "").trim();
   if (!raw) {
@@ -40,6 +45,30 @@ function normalizeBloodPressure(rawValue) {
   }
 
   return `${Number(match[1])}/${Number(match[2])}`;
+}
+
+function resolveBloodPressureValue(rawPayload) {
+  const normalized =
+    normalizeBloodPressure(
+      rawPayload?.bloodPressure ??
+        rawPayload?.blood_pressure ??
+        rawPayload?.bp
+    );
+  if (normalized) {
+    return normalized;
+  }
+
+  const systolic = toFiniteNumber(
+    rawPayload?.systolic ?? rawPayload?.sbp ?? rawPayload?.SBP
+  );
+  const diastolic = toFiniteNumber(
+    rawPayload?.diastolic ?? rawPayload?.dbp ?? rawPayload?.DBP
+  );
+  if (systolic === null || diastolic === null) {
+    return null;
+  }
+
+  return `${Math.round(systolic)}/${Math.round(diastolic)}`;
 }
 
 function sanitizeHexPayload(rawValue) {
@@ -104,6 +133,82 @@ function decodeHexObservations(hexPayload) {
   }
 
   return { observations, warnings };
+}
+
+function decodeHexJsonVitals(hexPayload) {
+  const normalizedHex = sanitizeHexPayload(hexPayload);
+  if (!normalizedHex) {
+    return null;
+  }
+
+  let decodedText = "";
+  try {
+    decodedText = Buffer.from(normalizedHex, "hex").toString("utf8").trim();
+  } catch {
+    return null;
+  }
+
+  if (!decodedText || !decodedText.startsWith("{")) {
+    return null;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(decodedText);
+  } catch {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+
+  const heartRate = toRoundedNumber(
+    toFiniteNumber(
+      parsed.heartRate ??
+        parsed.heart_rate ??
+        parsed.hr ??
+        parsed.heartrate
+    )
+  );
+  const spo2 = toRoundedNumber(
+    toFiniteNumber(
+      parsed.spo2 ??
+        parsed.SpO2 ??
+        parsed.spo_2 ??
+        parsed.oxygenSaturation ??
+        parsed.oxygen_saturation
+    )
+  );
+  const temperature = toRoundedNumber(
+    toFiniteNumber(
+      parsed.temperature ??
+        parsed.temp ??
+        parsed.tempC ??
+        parsed.temp_c ??
+        parsed.bodyTemperature ??
+        parsed.body_temperature
+    ),
+    1
+  );
+  const bloodPressure = resolveBloodPressureValue(parsed);
+
+  if (
+    heartRate === null &&
+    spo2 === null &&
+    temperature === null &&
+    !bloodPressure
+  ) {
+    return null;
+  }
+
+  return {
+    heartRate,
+    spo2,
+    temperature,
+    bloodPressure,
+    warning: "Decoded vitals from hex-encoded JSON payload",
+  };
 }
 
 function vitalsFromObservations(observations) {
@@ -205,18 +310,39 @@ function resolveTelemetryPayload(payload) {
     decoderWarnings = decoded.warnings;
     decodedObservations = decoded.observations;
     decodedVitals = vitalsFromObservations(decodedObservations);
+
+    const requiresJsonFallback =
+      !hasDecodedVitalValue(decodedVitals.heartRate) ||
+      !hasDecodedVitalValue(decodedVitals.spo2) ||
+      !hasDecodedVitalValue(decodedVitals.temperature) ||
+      !normalizeBloodPressure(decodedVitals.bloodPressure);
+
+    if (requiresJsonFallback) {
+      const fallbackVitals = decodeHexJsonVitals(hexPayload);
+      if (fallbackVitals) {
+        decodedVitals = {
+          heartRate: hasDecodedVitalValue(decodedVitals.heartRate)
+            ? decodedVitals.heartRate
+            : fallbackVitals.heartRate,
+          spo2: hasDecodedVitalValue(decodedVitals.spo2)
+            ? decodedVitals.spo2
+            : fallbackVitals.spo2,
+          temperature: hasDecodedVitalValue(decodedVitals.temperature)
+            ? decodedVitals.temperature
+            : fallbackVitals.temperature,
+          bloodPressure: decodedVitals.bloodPressure || fallbackVitals.bloodPressure,
+        };
+
+        decoderWarnings = decoderWarnings.filter((warning) => {
+          const normalizedWarning = String(warning || "").trim().toLowerCase();
+          return normalizedWarning !== "no supported vital-sign identifiers decoded from hex payload";
+        });
+        decoderWarnings.push(fallbackVitals.warning);
+      }
+    }
   }
 
-  const fallbackBloodPressure =
-    normalizeBloodPressure(body.bloodPressure || body.blood_pressure) ||
-    (() => {
-      const systolic = toFiniteNumber(body.systolic ?? body.sbp ?? body.SBP);
-      const diastolic = toFiniteNumber(body.diastolic ?? body.dbp ?? body.DBP);
-      if (systolic === null || diastolic === null) {
-        return null;
-      }
-      return `${Math.round(systolic)}/${Math.round(diastolic)}`;
-    })();
+  const fallbackBloodPressure = resolveBloodPressureValue(body);
 
   const resolved = {
     patientId,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AnalyticsAlertRecord,
   AnalyticsPatientState,
@@ -25,6 +25,8 @@ type AlertTimelineEntry = {
 
 const AUTO_REFRESH_INTERVAL_MS = 3000;
 const NEW_ALERT_WINDOW_MS = 10000;
+const CRITICAL_ALERT_SOUND_SRC = "/assets/alert.mp3";
+const CRITICAL_ALERT_SOUND_MAX_PLAY_MS = 6000;
 
 function toFiniteNumber(value: unknown): number | null {
   const parsed = Number(value);
@@ -130,7 +132,7 @@ function buildTimelineEntries(
   alerts: AnalyticsAlertRecord[],
   patientRiskMap: Record<string, string>
 ): AlertTimelineEntry[] {
-  const rows = alerts.map((alert, index) => {
+  const rows = alerts.map((alert) => {
     const patientId = String(alert.patient_id || "unknown").trim() || "unknown";
     const reason = String(alert.reason || alert.alert_reason || "-").trim() || "-";
     const timestamp = formatTimestamp(toFiniteNumber(alert.timestamp) ?? 0);
@@ -139,7 +141,7 @@ function buildTimelineEntries(
     const duplicateSuppressed = resolveDuplicateSuppressed(alert, cooldownRemainingSeconds);
 
     return {
-      id: `${patientId}-${timestamp.ms}-${index}`,
+      id: `${patientId}-${timestamp.ms}-${severity}-${reason}`,
       severity,
       patientId,
       alertReason: reason,
@@ -179,13 +181,102 @@ function severityDotClass(severity: AlertSeverity): string {
   return "bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,0.16)]";
 }
 
+function buildDemoTimelineEntries(): AlertTimelineEntry[] {
+  const now = Date.now();
+  return [
+    {
+      id: "demo-alert-critical-1",
+      severity: "critical",
+      patientId: "305",
+      alertReason: "SpO2 dropped below 90 with hypotension trend.",
+      timestampMs: now - 35 * 1000,
+      timestampLabel: new Date(now - 35 * 1000).toLocaleString(),
+      riskScoreLabel: "86",
+      duplicateSuppressed: false,
+      cooldownRemainingSeconds: 0,
+    },
+    {
+      id: "demo-alert-warning-1",
+      severity: "warning",
+      patientId: "204",
+      alertReason: "Sustained fever with rising HR trend.",
+      timestampMs: now - 2 * 60 * 1000,
+      timestampLabel: new Date(now - 2 * 60 * 1000).toLocaleString(),
+      riskScoreLabel: "61",
+      duplicateSuppressed: true,
+      cooldownRemainingSeconds: 18,
+    },
+    {
+      id: "demo-alert-critical-2",
+      severity: "critical",
+      patientId: "demo-alert-911",
+      alertReason: "Demo test alert: tachycardia + low oxygen saturation.",
+      timestampMs: now - 4 * 60 * 1000,
+      timestampLabel: new Date(now - 4 * 60 * 1000).toLocaleString(),
+      riskScoreLabel: "92",
+      duplicateSuppressed: false,
+      cooldownRemainingSeconds: 0,
+    },
+  ];
+}
+
 export default function AlertsTimelinePanel() {
-  const [entries, setEntries] = useState<AlertTimelineEntry[]>([]);
+  const [entries, setEntries] = useState<AlertTimelineEntry[]>(() => buildDemoTimelineEntries());
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("Demo alerts preloaded for presentation.");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const knownEntryIdsRef = useRef<Set<string>>(new Set());
+  const hasInitializedEntryIdsRef = useRef(false);
+  const playedCriticalIdsRef = useRef<Set<string>>(new Set());
+  const alertAudioRef = useRef<HTMLAudioElement | null>(null);
+  const stopAudioTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopCriticalAlertSound = useCallback(() => {
+    if (stopAudioTimerRef.current) {
+      clearTimeout(stopAudioTimerRef.current);
+      stopAudioTimerRef.current = null;
+    }
+
+    const audio = alertAudioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    audio.pause();
+    audio.currentTime = 0;
+  }, []);
+
+  const triggerCriticalAlertSound = useCallback(
+    (alertId: string) => {
+      const normalizedAlertId = String(alertId || "").trim();
+      if (!normalizedAlertId || playedCriticalIdsRef.current.has(normalizedAlertId)) {
+        return;
+      }
+
+      playedCriticalIdsRef.current.add(normalizedAlertId);
+
+      if (!alertAudioRef.current) {
+        const nextAudio = new Audio(CRITICAL_ALERT_SOUND_SRC);
+        nextAudio.loop = false;
+        alertAudioRef.current = nextAudio;
+      }
+
+      const audio = alertAudioRef.current;
+      audio.loop = false;
+
+      stopCriticalAlertSound();
+      console.log("Critical alert sound triggered");
+      void audio.play().catch(() => undefined);
+
+      stopAudioTimerRef.current = setTimeout(() => {
+        stopCriticalAlertSound();
+      }, CRITICAL_ALERT_SOUND_MAX_PLAY_MS);
+    },
+    [stopCriticalAlertSound]
+  );
 
   const refreshTimeline = useCallback(async (showLoadingState: boolean) => {
     if (showLoadingState) {
@@ -203,11 +294,40 @@ export default function AlertsTimelinePanel() {
       const alerts = Array.isArray(alertsResponse.alerts) ? alertsResponse.alerts : [];
       const patients = Array.isArray(patientsResponse.patients) ? patientsResponse.patients : [];
       const patientRiskMap = resolvePatientRiskMap(patients);
-      setEntries(buildTimelineEntries(alerts, patientRiskMap));
+      const nextEntries = buildTimelineEntries(alerts, patientRiskMap);
+      const incomingIds = nextEntries
+        .map((entry) => entry.id)
+        .filter((id) => !knownEntryIdsRef.current.has(id));
+
+      if (hasInitializedEntryIdsRef.current) {
+        const criticalIncomingIds = nextEntries
+          .filter(
+            (entry) => entry.severity === "critical" && incomingIds.includes(entry.id)
+          )
+          .map((entry) => entry.id);
+
+        for (const criticalAlertId of criticalIncomingIds) {
+          triggerCriticalAlertSound(criticalAlertId);
+        }
+      }
+
+      knownEntryIdsRef.current = new Set(nextEntries.map((entry) => entry.id));
+      hasInitializedEntryIdsRef.current = true;
+
+      if (nextEntries.length === 0) {
+        setEntries(buildDemoTimelineEntries());
+        setNotice("Live alerts are empty. Showing demo alert timeline.");
+      } else {
+        setEntries(nextEntries);
+        setNotice("");
+      }
       setError("");
       setLastSyncedAt(new Date().toISOString());
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not load alerts timeline");
+      const message = requestError instanceof Error ? requestError.message : "Could not load alerts timeline";
+      setEntries(buildDemoTimelineEntries());
+      setNotice(`Alerts API unavailable (${message}). Showing demo alert timeline.`);
+      setError("");
     } finally {
       if (showLoadingState) {
         setLoading(false);
@@ -215,7 +335,7 @@ export default function AlertsTimelinePanel() {
         setRefreshing(false);
       }
     }
-  }, []);
+  }, [triggerCriticalAlertSound]);
 
   useEffect(() => {
     let active = true;
@@ -229,7 +349,7 @@ export default function AlertsTimelinePanel() {
       await refreshTimeline(showLoadingState);
     };
 
-    void run(true);
+    void run(false);
     intervalId = setInterval(() => {
       void run(false);
     }, AUTO_REFRESH_INTERVAL_MS);
@@ -239,8 +359,10 @@ export default function AlertsTimelinePanel() {
       if (intervalId) {
         clearInterval(intervalId);
       }
+
+      stopCriticalAlertSound();
     };
-  }, [refreshTimeline]);
+  }, [refreshTimeline, stopCriticalAlertSound]);
 
   const filteredEntries = useMemo(() => {
     if (severityFilter === "all") {
@@ -302,6 +424,7 @@ export default function AlertsTimelinePanel() {
       </div>
 
       {error ? <p className="mt-3 rounded-lg border border-rose-500/35 bg-rose-900/20 p-3 text-sm text-rose-300">{error}</p> : null}
+      {notice ? <p className="mt-3 rounded-lg border border-cyan-500/35 bg-cyan-500/12 p-3 text-xs text-cyan-200">{notice}</p> : null}
 
       <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4">
         {loading ? (

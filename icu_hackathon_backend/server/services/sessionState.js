@@ -1,4 +1,44 @@
-const SUPPORTED_LANGUAGES = ["en", "hi", "bn", "ta", "te", "mr", "gu", "kn", "ml", "pa", "ur", "or"];
+const SUPPORTED_LANGUAGES = ["en", "hi", "bn", "ta", "te", "mr", "gu", "kn", "ml", "pa", "ur", "or", "as", "ne"];
+
+const LANGUAGE_ALIASES = Object.freeze({
+  english: "en",
+  hindi: "hi",
+  bengali: "bn",
+  bangla: "bn",
+  tamil: "ta",
+  telugu: "te",
+  marathi: "mr",
+  gujarati: "gu",
+  kannada: "kn",
+  malayalam: "ml",
+  punjabi: "pa",
+  urdu: "ur",
+  odia: "or",
+  oriya: "or",
+  assamese: "as",
+  nepali: "ne",
+  "en-in": "en",
+  "hi-in": "hi",
+  "bn-in": "bn",
+  "ta-in": "ta",
+  "te-in": "te",
+  "mr-in": "mr",
+  "gu-in": "gu",
+  "kn-in": "kn",
+  "ml-in": "ml",
+  "pa-in": "pa",
+  "ur-in": "ur",
+  "or-in": "or",
+  "as-in": "as",
+  "ne-np": "ne",
+});
+
+const LANGUAGE_FALLBACK_ORDER = Object.freeze({
+  as: ["bn", "hi", "en"],
+  ne: ["hi", "en"],
+  or: ["hi", "en"],
+  ur: ["hi", "en"],
+});
 
 let activeLanguage = "en";
 let languageBySession = new Map();
@@ -24,12 +64,22 @@ function normalizeLanguage(language) {
     return normalized;
   }
 
-  if (normalized.startsWith("hi")) {
-    return "hi";
+  if (LANGUAGE_ALIASES[normalized]) {
+    return LANGUAGE_ALIASES[normalized];
   }
 
-  if (normalized.startsWith("en")) {
-    return "en";
+  const compact = normalized.replace(/\s+/g, "");
+  if (LANGUAGE_ALIASES[compact]) {
+    return LANGUAGE_ALIASES[compact];
+  }
+
+  const baseCode = compact.split(/[-_]/)[0];
+  if (SUPPORTED_LANGUAGES.includes(baseCode)) {
+    return baseCode;
+  }
+
+  if (LANGUAGE_ALIASES[baseCode]) {
+    return LANGUAGE_ALIASES[baseCode];
   }
 
   return "en";
@@ -70,17 +120,9 @@ function getSupportedLanguages() {
 
 function getSarvamLanguageCandidates(language) {
   const normalized = normalizeLanguage(language);
-  const candidates = [normalized];
+  const languageSpecificFallbacks = LANGUAGE_FALLBACK_ORDER[normalized] || [];
 
-  if (normalized !== "en") {
-    candidates.push("en");
-  }
-
-  if (normalized !== "hi") {
-    candidates.push("hi");
-  }
-
-  return Array.from(new Set(candidates));
+  return Array.from(new Set([normalized, ...languageSpecificFallbacks, "en", "hi"]));
 }
 
 function shouldSpeakIntroduction(sessionId) {

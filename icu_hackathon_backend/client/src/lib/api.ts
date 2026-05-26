@@ -383,9 +383,8 @@ export type BillingPlan = {
   code: BillingPlanCode;
   name: string;
   billing_cycle: "monthly" | "yearly";
-  amount: number;
+  amount_usd: number;
   amount_display: string;
-  currency: string;
   usage_limit: number;
   highlights: string[];
 };
@@ -393,7 +392,6 @@ export type BillingPlan = {
 export type BillingPlansResponse = {
   gateway: string;
   mode: "test" | string;
-  configured?: boolean;
   plans: BillingPlan[];
 };
 
@@ -405,9 +403,7 @@ export type BillingCheckoutResponse = {
   razorpay_key_id: string;
   order: {
     id: string;
-    receipt?: string;
-    amount: number;
-    amount_subunits: number;
+    amount_usd: number;
     amount_display: string;
     currency: string;
     plan_code: BillingPlanCode;
@@ -436,13 +432,17 @@ export type BillingConfirmResponse = {
     gateway: string;
     order_id: string;
     payment_id: string;
-    signature_verified?: boolean;
-    status?: string;
   };
 };
 
-const SERVER_BASE = process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:4000";
-const ANALYTICS_BASE = process.env.NEXT_PUBLIC_ANALYTICS_URL ?? "http://localhost:8080";
+const SERVER_BASE =
+  process.env.NEXT_PUBLIC_SERVER_URL ??
+  process.env.NEXT_PUBLIC_API_URL ??
+  "http://localhost:4000";
+const ANALYTICS_BASE =
+  process.env.NEXT_PUBLIC_ANALYTICS_URL ??
+  process.env.NEXT_PUBLIC_PYTHON_API_URL ??
+  "http://localhost:8080";
 const API_KEY_STORAGE_KEY = "rapidai-runtime-api-key";
 const API_KEY_USER_ID_STORAGE_KEY = "rapidai-api-access-user-id";
 const DEFAULT_API_KEY_USER_ID = "doctor-101";
@@ -465,6 +465,11 @@ function isBrowserEnvironment(): boolean {
 }
 
 function readStoredRuntimeApiKey(): string | null {
+  if (PRECONFIGURED_API_KEY) {
+    cachedRuntimeApiKey = PRECONFIGURED_API_KEY;
+    return cachedRuntimeApiKey;
+  }
+
   if (cachedRuntimeApiKey && cachedRuntimeApiKey.trim().length > 0) {
     return cachedRuntimeApiKey;
   }
@@ -477,15 +482,15 @@ function readStoredRuntimeApiKey(): string | null {
     }
   }
 
-  if (PRECONFIGURED_API_KEY) {
-    cachedRuntimeApiKey = PRECONFIGURED_API_KEY;
-    return cachedRuntimeApiKey;
-  }
-
   return null;
 }
 
 function persistRuntimeApiKey(apiKey: string): void {
+  if (PRECONFIGURED_API_KEY) {
+    cachedRuntimeApiKey = PRECONFIGURED_API_KEY;
+    return;
+  }
+
   const normalized = String(apiKey || "").trim();
   if (!normalized) {
     return;
@@ -505,7 +510,7 @@ function persistRuntimeApiKey(apiKey: string): void {
 }
 
 function clearStoredRuntimeApiKey(): void {
-  cachedRuntimeApiKey = null;
+  cachedRuntimeApiKey = PRECONFIGURED_API_KEY || null;
 
   if (!isBrowserEnvironment()) {
     return;
@@ -554,6 +559,11 @@ async function parseJsonPayload(response: Response): Promise<Record<string, unkn
 }
 
 async function regenerateRuntimeApiKey(): Promise<string | null> {
+  if (PRECONFIGURED_API_KEY) {
+    persistRuntimeApiKey(PRECONFIGURED_API_KEY);
+    return PRECONFIGURED_API_KEY;
+  }
+
   if (inFlightApiKeyPromise) {
     return inFlightApiKeyPromise;
   }
@@ -727,7 +737,7 @@ export async function fetchBillingPlans(): Promise<BillingPlansResponse> {
   return requestJson("/billing/plans");
 }
 
-export async function createBillingCheckout(payload: {
+export async function createDemoBillingCheckout(payload: {
   userId: string;
   planCode: BillingPlanCode;
   gateway?: string;
@@ -745,13 +755,11 @@ export async function createBillingCheckout(payload: {
   });
 }
 
-export async function confirmBillingPayment(payload: {
+export async function confirmDemoBillingPayment(payload: {
   userId: string;
   planCode: BillingPlanCode;
   orderId: string;
-  razorpayOrderId?: string;
   razorpayPaymentId?: string;
-  razorpaySignature?: string;
   gateway?: string;
 }): Promise<BillingConfirmResponse> {
   const normalizedUserId = normalizeApiAccessUserId(payload.userId);
@@ -768,9 +776,7 @@ export async function confirmBillingPayment(payload: {
       userId: normalizedUserId,
       planCode: normalizedPlanCode,
       orderId: normalizedOrderId,
-      razorpayOrderId: String(payload.razorpayOrderId || normalizedOrderId).trim(),
       razorpayPaymentId: String(payload.razorpayPaymentId || "").trim(),
-      razorpaySignature: String(payload.razorpaySignature || "").trim(),
       gateway: String(payload.gateway || "razorpay_test"),
     }),
   });
@@ -933,6 +939,7 @@ export async function updateTelemetry(payload: {
   hexPayload?: string;
   telemetryHex?: string;
   hex_payload?: string;
+  sourceHint?: string;
 }): Promise<TelemetryUpdateResponse> {
   return requestJson("/telemetry/update", {
     method: "POST",
@@ -945,6 +952,8 @@ export async function ingestTelemetryHex(hexPayload: string): Promise<TelemetryI
     method: "POST",
     body: JSON.stringify({
       hex_payload: hexPayload,
+      patient_id: "decode-only",
+      monitor_id: "decode-only"
     }),
   });
 }

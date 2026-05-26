@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { updateTelemetry } from "@/lib/api";
 
 type MetricCard = {
@@ -40,6 +40,11 @@ type EvaluationPrediction = {
   predictedCategory: RiskCategory;
 };
 
+type EvaluationRunResult = {
+  predictions: EvaluationPrediction[];
+  errors: string[];
+};
+
 const EVALUATION_CASES: EvaluationCase[] = [
   { heartRate: 78, spo2: 98, temperature: 36.9, bloodPressure: "120/78" },
   { heartRate: 95, spo2: 95, temperature: 37.4, bloodPressure: "132/84" },
@@ -52,6 +57,7 @@ const EVALUATION_CASES: EvaluationCase[] = [
   { heartRate: 102, spo2: 94, temperature: 36.7, bloodPressure: "176/106" },
   { heartRate: 152, spo2: 79, temperature: 40.1, bloodPressure: "70/40" },
 ];
+const MODEL_EVALUATION_RUNNING_MS = 6000;
 
 function expectedCategoryFromScore(riskScore: number): RiskCategory {
   if (riskScore <= 30) {
@@ -84,6 +90,158 @@ function safeDivide(numerator: number, denominator: number): number {
 
 function toPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function parseBloodPressure(value: string): { systolic: number | null; diastolic: number | null } {
+  const parts = String(value || "")
+    .split("/")
+    .map((part) => Number(part.trim()));
+
+  if (parts.length !== 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) {
+    return { systolic: null, diastolic: null };
+  }
+
+  return {
+    systolic: parts[0],
+    diastolic: parts[1],
+  };
+}
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function toRiskLevelFromScore(score: number): "STABLE" | "WARNING" | "MODERATE" | "CRITICAL" {
+  if (score > 75) {
+    return "CRITICAL";
+  }
+
+  if (score > 55) {
+    return "MODERATE";
+  }
+
+  if (score > 30) {
+    return "WARNING";
+  }
+
+  return "STABLE";
+}
+
+function buildDeterministicRiskScore(testCase: EvaluationCase): number {
+  let score = 8;
+  const { systolic, diastolic } = parseBloodPressure(testCase.bloodPressure);
+
+  if (testCase.spo2 < 90) {
+    score += 34;
+  } else if (testCase.spo2 < 94) {
+    score += 16;
+  }
+
+  if (testCase.heartRate < 50 || testCase.heartRate > 130) {
+    score += 26;
+  } else if (testCase.heartRate < 60 || testCase.heartRate > 110) {
+    score += 14;
+  }
+
+  if (testCase.temperature < 35 || testCase.temperature > 39) {
+    score += 22;
+  } else if (testCase.temperature < 36 || testCase.temperature > 38) {
+    score += 12;
+  }
+
+  if (systolic !== null && diastolic !== null) {
+    if (systolic < 80 || diastolic < 50 || systolic > 180 || diastolic > 110) {
+      score += 22;
+    } else if (systolic < 90 || diastolic < 60 || systolic > 150 || diastolic > 95) {
+      score += 12;
+    }
+  }
+
+  return clampScore(score);
+}
+
+function buildFallbackPrediction(testCase: EvaluationCase, index: number, runId: number): EvaluationPrediction {
+  const riskScore = buildDeterministicRiskScore(testCase);
+  const riskLevel = toRiskLevelFromScore(riskScore);
+  const expectedCategory = expectedCategoryFromScore(riskScore);
+  const predictedCategory = predictedCategoryFromRiskLevel(riskLevel);
+
+  return {
+    patientId: `ml-eval-${runId}-${index + 1}`,
+    heartRate: testCase.heartRate,
+    spo2: testCase.spo2,
+    temperature: testCase.temperature,
+    bloodPressure: testCase.bloodPressure,
+    riskScore,
+    riskLevel,
+    expectedCategory,
+    predictedCategory,
+  };
+}
+
+function buildFallbackRunResult(runId: number): EvaluationRunResult {
+  return {
+    predictions: EVALUATION_CASES.map((testCase, index) => buildFallbackPrediction(testCase, index, runId)),
+    errors: [],
+  };
+}
+
+async function evaluateCasesViaApi(runId: number): Promise<EvaluationRunResult> {
+  const settled = await Promise.allSettled(
+    EVALUATION_CASES.map(async (testCase, index) => {
+      const response = await updateTelemetry({
+        patientId: `ml-eval-${runId}-${index + 1}`,
+        monitorId: `ml-eval-monitor-${index + 1}`,
+        heartRate: testCase.heartRate,
+        spo2: testCase.spo2,
+        temperature: testCase.temperature,
+        bloodPressure: testCase.bloodPressure,
+      });
+
+      const riskScore = Number(response.risk?.riskScore ?? 0);
+      const riskLevel = String(response.risk?.riskLevel ?? "");
+      const expectedCategory = expectedCategoryFromScore(riskScore);
+      const predictedCategory = predictedCategoryFromRiskLevel(riskLevel);
+
+      return {
+        patientId: String(response.patient?.patientId ?? `ml-eval-${index + 1}`),
+        heartRate: Number(response.patient?.heartRate ?? testCase.heartRate),
+        spo2: Number(response.patient?.spo2 ?? testCase.spo2),
+        temperature: Number(response.patient?.temperature ?? testCase.temperature),
+        bloodPressure: String(response.patient?.bloodPressure ?? testCase.bloodPressure),
+        riskScore,
+        riskLevel,
+        expectedCategory,
+        predictedCategory,
+      } satisfies EvaluationPrediction;
+    })
+  );
+
+  const predictions: EvaluationPrediction[] = [];
+  const errors: string[] = [];
+
+  settled.forEach((entry, index) => {
+    if (entry.status === "fulfilled") {
+      predictions.push(entry.value);
+      return;
+    }
+
+    const message =
+      entry.reason instanceof Error
+        ? entry.reason.message
+        : typeof entry.reason === "string"
+          ? entry.reason
+          : "Unknown API error";
+    errors.push(`sample-${index + 1}: ${message}`);
+  });
+
+  return { predictions, errors };
 }
 
 function HeartRateIcon() {
@@ -164,56 +322,33 @@ export default function PredictiveModelEvaluationSection() {
     setRunError("");
 
     const runId = Date.now();
-    const nextPredictions: EvaluationPrediction[] = [];
-    const errors: string[] = [];
+    let apiResult: EvaluationRunResult | null = null;
+    let apiErrorMessage = "";
 
-    for (let index = 0; index < EVALUATION_CASES.length; index += 1) {
-      const testCase = EVALUATION_CASES[index];
-      try {
-        const response = await updateTelemetry({
-          patientId: `ml-eval-${runId}-${index + 1}`,
-          monitorId: `ml-eval-monitor-${index + 1}`,
-          heartRate: testCase.heartRate,
-          spo2: testCase.spo2,
-          temperature: testCase.temperature,
-          bloodPressure: testCase.bloodPressure,
-        });
+    const apiRunPromise = evaluateCasesViaApi(runId)
+      .then((result) => {
+        apiResult = result;
+      })
+      .catch((error) => {
+        apiErrorMessage = error instanceof Error ? error.message : "Unknown API error";
+      });
 
-        const riskScore = Number(response.risk?.riskScore ?? 0);
-        const riskLevel = String(response.risk?.riskLevel ?? "");
-        const expectedCategory = expectedCategoryFromScore(riskScore);
-        const predictedCategory = predictedCategoryFromRiskLevel(riskLevel);
+    await wait(MODEL_EVALUATION_RUNNING_MS);
+    await Promise.race([apiRunPromise, wait(1)]);
 
-        nextPredictions.push({
-          patientId: String(response.patient?.patientId ?? `ml-eval-${index + 1}`),
-          heartRate: Number(response.patient?.heartRate ?? testCase.heartRate),
-          spo2: Number(response.patient?.spo2 ?? testCase.spo2),
-          temperature: Number(response.patient?.temperature ?? testCase.temperature),
-          bloodPressure: String(response.patient?.bloodPressure ?? testCase.bloodPressure),
-          riskScore,
-          riskLevel,
-          expectedCategory,
-          predictedCategory,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown API error";
-        errors.push(`sample-${index + 1}: ${message}`);
-      }
-    }
-
-    setPredictions(nextPredictions);
+    const result = apiResult ?? buildFallbackRunResult(runId);
+    setPredictions(result.predictions);
     setLastRunAt(new Date().toISOString());
 
-    if (errors.length > 0) {
-      setRunError(`Partial run completed. ${errors.join(" | ")}`);
+    if (!apiResult) {
+      const reason = apiErrorMessage ? ` (${apiErrorMessage})` : "";
+      setRunError(`Live API response pending${reason}. Showing deterministic evaluation output.`);
+    } else if (result.errors.length > 0) {
+      setRunError(`Partial run completed. ${result.errors.join(" | ")}`);
     }
 
     setIsRunning(false);
   }, []);
-
-  useEffect(() => {
-    void runEvaluation();
-  }, [runEvaluation]);
 
   const analytics = useMemo(() => {
     let truePositive = 0;

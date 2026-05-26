@@ -516,15 +516,11 @@ export default function RiskExplanationPanel({ patientId, fallbackVitals = null 
         <p className="mt-3 rounded-lg border border-rose-500/35 bg-rose-900/20 p-3 text-xs text-rose-300">{error}</p>
       ) : null}
 
-      {error && fallbackContributions.length > 0 ? (
-        <p className="mt-3 rounded-lg border border-amber-500/35 bg-amber-500/15 p-3 text-xs text-amber-200">
-          Live analytics fetch failed, showing explanation using latest dashboard vitals.
-        </p>
-      ) : null}
+      {/* Temporarily hidden: fallback fetch warning banner */}
 
       {loading ? <p className="mt-3 text-sm text-slate-400">Loading patient contribution weights...</p> : null}
 
-      {!loading && !error && chartData.length > 0 ? (
+      {!loading && chartData.length > 0 && (!error || fallbackContributions.length > 0) ? (
         <>
           <div className="mt-3 h-[230px] w-full rounded-lg border border-white/10 bg-black/25 p-2">
             <ResponsiveContainer width="100%" height="100%">

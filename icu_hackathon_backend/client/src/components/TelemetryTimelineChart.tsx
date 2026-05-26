@@ -149,13 +149,84 @@ function buildChartDataset(events: TimelineEvent[]): {
   };
 }
 
+function buildDemoTimelineEvents(filterPatientId: string): TimelineEvent[] {
+  const now = Date.now();
+  const demoEvents: TimelineEvent[] = [
+    {
+      id: "demo-timeline-telemetry-1",
+      eventType: "telemetry",
+      patientId: "204",
+      occurredAt: new Date(now - 9 * 60 * 1000).toISOString(),
+      riskLevel: "STABLE",
+      telemetry: {
+        heartRate: 94,
+        spo2: 97,
+        temperature: 98.7,
+        bloodPressure: "120/78",
+      },
+    },
+    {
+      id: "demo-timeline-telemetry-2",
+      eventType: "telemetry",
+      patientId: "204",
+      occurredAt: new Date(now - 6 * 60 * 1000).toISOString(),
+      riskLevel: "WARNING",
+      telemetry: {
+        heartRate: 108,
+        spo2: 93,
+        temperature: 99.8,
+        bloodPressure: "132/84",
+      },
+    },
+    {
+      id: "demo-timeline-alert-1",
+      eventType: "alert",
+      patientId: "204",
+      occurredAt: new Date(now - 5 * 60 * 1000).toISOString(),
+      riskLevel: "WARNING",
+      message: "Demo warning alert triggered for rising HR trend.",
+      delivered: true,
+    },
+    {
+      id: "demo-timeline-telemetry-3",
+      eventType: "telemetry",
+      patientId: "demo-alert-911",
+      occurredAt: new Date(now - 3 * 60 * 1000).toISOString(),
+      riskLevel: "CRITICAL",
+      telemetry: {
+        heartRate: 146,
+        spo2: 84,
+        temperature: 103.1,
+        bloodPressure: "82/50",
+      },
+    },
+    {
+      id: "demo-timeline-alert-2",
+      eventType: "alert",
+      patientId: "demo-alert-911",
+      occurredAt: new Date(now - 2 * 60 * 1000).toISOString(),
+      riskLevel: "CRITICAL",
+      message: "Demo critical alert dispatched to escalation channels.",
+      delivered: true,
+    },
+  ];
+
+  if (filterPatientId === "all") {
+    return demoEvents;
+  }
+
+  const filtered = demoEvents.filter((event) => event.patientId === filterPatientId);
+  return filtered.length > 0 ? filtered : demoEvents.filter((event) => event.patientId === "204");
+}
+
 export default function TelemetryTimelineChart() {
-  const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [events, setEvents] = useState<TimelineEvent[]>(() => buildDemoTimelineEvents("all"));
   const [patientOptions, setPatientOptions] = useState<string[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState<string>("all");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("Demo timeline points preloaded.");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
   const refreshTimeline = useCallback(async (showLoadingState: boolean) => {
@@ -182,13 +253,33 @@ export default function TelemetryTimelineChart() {
         }
       }
 
+      const liveEvents = filteredTimeline.events || [];
       const nextOptions = Array.from(optionSet).sort((a, b) => a.localeCompare(b));
-      setPatientOptions(nextOptions);
-      setEvents(filteredTimeline.events || []);
+      if (liveEvents.length === 0) {
+        const demoEvents = buildDemoTimelineEvents(selectedPatientId);
+        const demoOptions = Array.from(
+          new Set(demoEvents.map((event) => String(event.patientId || "").trim()).filter((value) => value.length > 0))
+        ).sort((a, b) => a.localeCompare(b));
+        setPatientOptions(nextOptions.length > 0 ? nextOptions : demoOptions);
+        setEvents(demoEvents);
+        setNotice("Live timeline is empty. Showing demo telemetry trend.");
+      } else {
+        setPatientOptions(nextOptions);
+        setEvents(liveEvents);
+        setNotice("");
+      }
       setLastSyncedAt(new Date().toISOString());
       setError("");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not load telemetry timeline");
+      const message = requestError instanceof Error ? requestError.message : "Could not load telemetry timeline";
+      const demoEvents = buildDemoTimelineEvents(selectedPatientId);
+      const demoOptions = Array.from(
+        new Set(demoEvents.map((event) => String(event.patientId || "").trim()).filter((value) => value.length > 0))
+      ).sort((a, b) => a.localeCompare(b));
+      setPatientOptions(demoOptions);
+      setEvents(demoEvents);
+      setNotice(`Timeline API unavailable (${message}). Showing demo telemetry trend.`);
+      setError("");
     } finally {
       if (showLoadingState) {
         setLoading(false);
@@ -210,7 +301,7 @@ export default function TelemetryTimelineChart() {
       await refreshTimeline(showLoadingState);
     };
 
-    void run(true);
+    void run(false);
     intervalId = setInterval(() => {
       void run(false);
     }, AUTO_REFRESH_MS);
@@ -282,6 +373,7 @@ export default function TelemetryTimelineChart() {
       </div>
 
       {error ? <p className="mt-3 rounded-lg border border-rose-500/35 bg-rose-900/20 p-3 text-sm text-rose-300">{error}</p> : null}
+      {notice ? <p className="mt-3 rounded-lg border border-cyan-500/35 bg-cyan-500/12 p-3 text-xs text-cyan-200">{notice}</p> : null}
 
       <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
         {loading ? (

@@ -88,12 +88,40 @@ function strategyBadgeClass(strategy: string): string {
   return "border-cyan-500/40 bg-cyan-500/12 text-cyan-300";
 }
 
+function buildDemoRows(): IdentityCollisionRow[] {
+  const now = Date.now();
+  return [
+    {
+      monitorId: "monitor-204",
+      patientId: "204",
+      resolutionStrategy: "direct-bind",
+      timestampMs: now - 30 * 1000,
+      timestampLabel: new Date(now - 30 * 1000).toLocaleString(),
+    },
+    {
+      monitorId: "bed-a7-pulse",
+      patientId: "anon_305",
+      resolutionStrategy: "anonymous-bind",
+      timestampMs: now - 2 * 60 * 1000,
+      timestampLabel: new Date(now - 2 * 60 * 1000).toLocaleString(),
+    },
+    {
+      monitorId: "shared-monitor-12",
+      patientId: "412",
+      resolutionStrategy: "collision-fallback",
+      timestampMs: now - 4 * 60 * 1000,
+      timestampLabel: new Date(now - 4 * 60 * 1000).toLocaleString(),
+    },
+  ];
+}
+
 export default function IdentityCollisionPanel() {
-  const [rows, setRows] = useState<IdentityCollisionRow[]>([]);
+  const [rows, setRows] = useState<IdentityCollisionRow[]>(() => buildDemoRows());
   const [searchMonitorId, setSearchMonitorId] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("Demo rows preloaded for presentation.");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
   const refreshData = useCallback(async (showLoadingState: boolean) => {
@@ -106,11 +134,20 @@ export default function IdentityCollisionPanel() {
     try {
       const response = await fetchAnalyticsPatients();
       const patientRows = Array.isArray(response.patients) ? response.patients : [];
-      setRows(buildRows(patientRows));
+      if (patientRows.length === 0) {
+        setRows(buildDemoRows());
+        setNotice("Live mapping rows are empty. Showing demo identity mappings.");
+      } else {
+        setRows(buildRows(patientRows));
+        setNotice("");
+      }
       setLastSyncedAt(new Date().toISOString());
       setError("");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Failed to load identity mapping data");
+      const message = requestError instanceof Error ? requestError.message : "Failed to load identity mapping data";
+      setRows(buildDemoRows());
+      setNotice(`Identity API unavailable (${message}). Showing demo identity mappings.`);
+      setError("");
     } finally {
       if (showLoadingState) {
         setLoading(false);
@@ -132,7 +169,7 @@ export default function IdentityCollisionPanel() {
       await refreshData(showLoadingState);
     };
 
-    void run(true);
+    void run(false);
     intervalId = setInterval(() => {
       void run(false);
     }, 5000);
@@ -191,6 +228,7 @@ export default function IdentityCollisionPanel() {
       </div>
 
       {error ? <p className="mt-3 rounded-lg border border-rose-500/35 bg-rose-900/20 p-3 text-sm text-rose-300">{error}</p> : null}
+      {notice ? <p className="mt-3 rounded-lg border border-cyan-500/35 bg-cyan-500/12 p-3 text-xs text-cyan-200">{notice}</p> : null}
 
       <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
         <table className="min-w-full text-left text-sm text-slate-300">
