@@ -14,7 +14,7 @@ FEATURE_COLUMNS = [
     "temperature",
     "systolic_bp",
     "diastolic_bp",
-]
+];
 TARGET_COLUMN = "risk_label"
 
 
