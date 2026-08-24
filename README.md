@@ -1,3 +1,4 @@
+
 ![Next.js](https://img.shields.io/badge/Next.js_16-black?style=for-the-badge&logo=next.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![Express](https://img.shields.io/badge/Express.js-404D59?style=for-the-badge&logo=express&logoColor=white)
@@ -10,13 +11,13 @@
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 ![HL7](https://img.shields.io/badge/HL7_ORU^R01-6A0DAD?style=for-the-badge&logo=redcross&logoColor=white)
 
-![ICU Hackathon](https://img.shields.io/badge/ICU_HACKATHON_2025-1A1A2E?style=for-the-badge&color=1A1A2E)
+![ICU Hackathon](https://img.shields.io/badge/ICU_HACKATHON_2026-1A1A2E?style=for-the-badge&color=1A1A2E)
 ![Healthcare Track](https://img.shields.io/badge/HEALTHCARE_TRACK-16213E?style=for-the-badge&color=16213E)
 ![Team Syntrix](https://img.shields.io/badge/TEAM_SYNTRIX-0F3460?style=for-the-badge&color=0F3460)
 
 ---
 
-# 🏥 Rapid AI — Real-Time ICU Telemetry Intelligence Platform
+#  Rapid AI — Real-Time ICU Telemetry Intelligence Platform
 
 ### AI-Powered ICU Early Warning & Voice Copilot | Team Syntrix
 
@@ -35,7 +36,7 @@ India's ICUs are critically understaffed and overmonitored — but under-intelli
 - **Late escalation** means critical patients wait while minor cases occupy attention first
 - Government ICUs like **KGMU Lucknow** and **Safdarjung Hospital** have zero AI-assisted triage today
 
----
+
 
 ## 2. Solution Overview
 
