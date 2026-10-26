@@ -70,7 +70,7 @@ It ingests raw telemetry → decodes it → resolves patient identity → comput
 8. Hit Simulator Toggle → continuous synthetic load, watch timeline evolve
 ```
 
----
+
 
 ## 4. Agent / Pipeline Architecture
 
@@ -89,7 +89,7 @@ flowchart TD
     J --> K[🔊 LiveKit Broadcast\nNear-Realtime Audio]
 ```
 
----
+
 
 ## 5. System Architecture
 
@@ -220,7 +220,7 @@ Doctor hears: "Patient 203 critical hai, SpO2 86%, HR 142..."
 
 **Supported Intents:** `PATIENT_STATUS` · `ICU_SUMMARY` · `LANGUAGE_SWITCH` · `PLATFORM_GUIDE` · `GENERAL_QUERY`
 
----
+
 
 ## 9. Real Hospital Monitor Compatibility
 
@@ -233,7 +233,7 @@ Doctor hears: "Patient 203 critical hai, SpO2 86%, HR 142..."
 | FHIR Connector | 🔜 Planned |
 | MQTT Bedside IoT | 🔜 Planned |
 
----
+
 
 ## 10. API Surface
 
@@ -252,7 +252,7 @@ Doctor hears: "Patient 203 critical hai, SpO2 86%, HR 142..."
 | `/api-key/my-key` | GET | Generate/fetch API key |
 | `/integration/status` | GET | WhatsApp + LiveKit readiness |
 
----
+
 
 ## 11. Tech Stack
 
@@ -346,13 +346,13 @@ curl -X POST http://localhost:4000/telemetry/update \
 - 📡 MQTT + FHIR native connectors for bedside IoT
 - 🧠 Federated learning for cross-site model improvement without raw data sharing
 
----
+
 
 ## 15. Team
 
 **Team Syntrix** — Building AI infrastructure for underserved healthcare settings in India.
 
----
+
 
 ## License
 
