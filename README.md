@@ -15,7 +15,7 @@
 ![Healthcare Track](https://img.shields.io/badge/HEALTHCARE_TRACK-16213E?style=for-the-badge&color=16213E)
 ![Team Syntrix](https://img.shields.io/badge/TEAM_SYNTRIX-0F3460?style=for-the-badge&color=0F3460)
 
----
+
 
 #  Rapid AI — Real-Time ICU Telemetry Intelligence Platform
 
@@ -23,7 +23,7 @@
 
 > *"Every second an ICU deterioration goes undetected is a second the system failed the patient. Rapid AI closes that gap — before the emergency happens."*
 
----
+
 
 ## 1. Problem Statement
 
@@ -55,7 +55,7 @@ It ingests raw telemetry → decodes it → resolves patient identity → comput
 | 🔢 **Hex Decoder** | Raw hex packet → structured vitals (HR, SpO2, Temp, BP) |
 | 📊 **Timeline Intelligence** | Full risk transition + alert + vitals history in Supabase |
 
----
+
 
 ## 3. Live Demo — 60 Second Script for Judges
 
