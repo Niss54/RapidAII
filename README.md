@@ -270,7 +270,7 @@ Doctor hears: "Patient 203 critical hai, SpO2 86%, HR 142..."
 | Monitor Adapters | HL7 TCP, SerialPort, Python Simulator |
 | Payments (API Tier) | Razorpay |
 
----
+
 
 ## 12. Quick Start
 
@@ -311,7 +311,7 @@ npm --prefix client run dev
 | `SARVAM_API_KEY` | Sarvam AI |
 | `GROQ_API_KEY` | Groq |
 
----
+
 
 ## 13. Test a Critical Alert (30 seconds)
 
@@ -336,7 +336,7 @@ curl -X POST http://localhost:4000/telemetry/update \
 }
 ```
 
----
+
 
 ## 14. Future Roadmap
 
